@@ -301,9 +301,10 @@ with tab1:
 
                 st.subheader("📋 Summary")
                 st.write(f"**Total Images:** {len(df)}")
-                st.write(f"**Average Confidence:** {df['Confidence"].mean():.4f}")
-                st.write(f"**Average Domain Score:** {df['Domain Score"].mean():.4f}")
+                st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
+                st.write(f"**Average Domain Score:** {df['Domain Score'].mean():.4f}")
                 st.write(f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)")
+
 
 with tab3:
     st.header("ℹ️ About the Model")
