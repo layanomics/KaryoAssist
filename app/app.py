@@ -84,25 +84,31 @@ def check_image_quality(img, min_size=20, min_contrast=8):
 
 def compute_domain_score(img):
     """
-    Calibrated heuristic OOD score for BioImLAB-style chromosome crops.
+    Robust OOD score for BioImLAB-style chromosome .bmp images
+    (binary / thresholded white-background chromosome crops).
     Returns 0..1 (higher = more in-domain).
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
 
-    # Basic statistics
-    mu = gray.mean()                # brightness
-    sigma = gray.std()              # contrast
-    fg_ratio = np.mean(gray < 180)  # chromosome pixel ratio
+    # Core statistics
+    mu = gray.mean()                  # brightness (usually high, 180–250)
+    sigma = gray.std()                # contrast (typically low-mid, 20–60)
+    dark_ratio = np.mean(gray < 100)  # fraction of black/dark chromosome pixels
 
-    def bell(x, c, w):
-        return np.exp(-0.5 * ((x - c) / w) ** 2)
+    # Target ranges tuned for BioImLAB crops
+    # White background -> mean ~210±40, dark ratio ~0.03–0.15, contrast moderate
+    def smooth_clip(x, c, w):
+        return np.exp(-abs(x - c) / w)
 
-    # Tuned centers for BioImLAB brightness/contrast distribution
-    s_mu    = bell(mu, c=170, w=50)     # mean brightness ~170 (light background)
-    s_sigma = bell(sigma, c=45,  w=25)  # contrast ~40–60
-    s_fg    = bell(fg_ratio, c=0.12, w=0.10)  # typical dark area fraction
+    s_mu = smooth_clip(mu, c=210, w=60)       # Brightness fit
+    s_sigma = smooth_clip(sigma, c=40, w=30)  # Contrast fit
+    s_dark = smooth_clip(dark_ratio, c=0.07, w=0.07)  # Chromosome density fit
 
-    score = (s_mu * s_sigma * s_fg) ** (1/3)
+    # Combine features
+    score = (s_mu * s_sigma * s_dark) ** (1 / 3)
+
+    # Prevent extreme 0.0 flattening (smooth curve)
+    score = np.power(score, 0.5)
     return float(np.clip(score, 0.0, 1.0))
 
 
