@@ -82,6 +82,19 @@ def check_image_quality(img, min_size=50, min_contrast=15):
     return None
 
 
+def compute_domain_score(img):
+    """
+    Heuristic OOD score based on shape and pixel statistics.
+    Returns a float between 0 and 1 (lower = more likely OOD).
+    """
+    gray = np.array(img.convert("L"))
+    mean_intensity = gray.mean()
+    contrast = gray.std()
+    binary_ratio = np.mean(gray < 128)
+    domain_score = np.exp(-abs(contrast - 50) / 20) * (1 - abs(binary_ratio - 0.3)) * (1 - abs(mean_intensity - 150) / 150)
+    return float(max(0.0, min(1.0, domain_score)))
+
+
 # ----------------------------------------------------------
 # Initialize model once
 # ----------------------------------------------------------
@@ -136,7 +149,6 @@ with tab1:
 
         for idx_img, img_item in enumerate(image_files):
             try:
-                # Handle files from zip or direct upload
                 if isinstance(img_item, str):
                     img = Image.open(img_item).convert("RGB")
                     name = os.path.basename(img_item)
@@ -144,8 +156,9 @@ with tab1:
                     img = Image.open(img_item).convert("RGB")
                     name = img_item.name
 
-                # --- Quality check ---
+                # --- Quality & domain score ---
                 quality_warning = check_image_quality(img)
+                domain_score = compute_domain_score(img)
 
                 x = transform(img).unsqueeze(0)
                 with torch.inference_mode():
@@ -155,10 +168,11 @@ with tab1:
                 conf, idx = torch.max(probs, dim=0)
                 pred_label = class_names[idx.item()]
 
-                # --- Domain/Confidence check ---
                 conf_val = float(conf)
-                is_low_conf = conf_val < 0.5
-                if is_low_conf or quality_warning:
+                is_low_conf = conf_val < 0.7
+                is_low_domain = domain_score < 0.4
+
+                if is_low_conf or is_low_domain or quality_warning:
                     out_domain += 1
                 else:
                     in_domain += 1
@@ -167,9 +181,11 @@ with tab1:
                     "Image": name,
                     "Predicted Class": pred_label,
                     "Confidence": round(conf_val, 4),
+                    "Domain Score": round(domain_score, 3),
                     "Preview": img,
                     "Warning": quality_warning if quality_warning else "",
-                    "Low Confidence": is_low_conf
+                    "Low Confidence": is_low_conf,
+                    "Low Domain Score": is_low_domain
                 })
 
             except Exception as e:
@@ -187,16 +203,15 @@ with tab1:
                 "Image": r["Image"],
                 "Predicted Class": r["Predicted Class"],
                 "Confidence": r["Confidence"],
+                "Domain Score": r["Domain Score"],
                 "Warning": r["Warning"]
             } for r in results])
 
             st.subheader("📊 Prediction Results")
-            styled_df = df.style.background_gradient(
-                subset=["Confidence"], cmap="Blues"
-            )
+            styled_df = df.style.background_gradient(subset=["Confidence"], cmap="Blues") \
+                                .background_gradient(subset=["Domain Score"], cmap="Oranges")
             st.dataframe(styled_df, use_container_width=True)
 
-            # Downloadable CSV
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Download Results as CSV",
@@ -205,7 +220,6 @@ with tab1:
                 mime="text/csv"
             )
 
-            # Out-of-domain summary
             st.markdown("---")
             st.markdown("### 🧠 Domain Check Summary")
             col1, col2 = st.columns(2)
@@ -220,13 +234,16 @@ with tab1:
             for i, r in enumerate(results):
                 with cols[i % 3]:
                     caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
-                    if r["Warning"] or r["Low Confidence"]:
+                    if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
                         caption += " ⚠️"
                     st.image(r["Preview"], caption=caption, use_column_width=True)
                     if r["Warning"]:
                         st.warning(r["Warning"])
-                    if r["Low Confidence"]:
-                        st.warning(f"Low model confidence ({r['Confidence']:.2f}) – may be out of domain.")
+                    if r["Low Confidence"] or r["Low Domain Score"]:
+                        st.warning(
+                            f"⚠️ Low confidence ({r['Confidence']:.2f}) or abnormal domain score "
+                            f"({r['Domain Score']:.2f}) – likely out-of-domain input."
+                        )
 
             # ------------------------------------------------------
             # Analytics Tab
@@ -246,9 +263,18 @@ with tab1:
                 ax.set_title("Confidence Score Distribution")
                 st.pyplot(fig)
 
+                st.subheader("🧠 Domain Score Histogram")
+                fig2, ax2 = plt.subplots()
+                ax2.hist(df["Domain Score"], bins=10, color="orange", edgecolor="black")
+                ax2.set_xlabel("Domain Score (higher = in-domain)")
+                ax2.set_ylabel("Frequency")
+                ax2.set_title("Domain Similarity Distribution")
+                st.pyplot(fig2)
+
                 st.subheader("📋 Summary")
                 st.write(f"**Total Images:** {len(df)}")
                 st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
+                st.write(f"**Average Domain Score:** {df['Domain Score'].mean():.4f}")
                 st.write(f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)")
 
 with tab3:
