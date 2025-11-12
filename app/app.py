@@ -173,12 +173,19 @@ with tab1:
                 is_low_conf = conf_val < 0.7
                 is_low_domain = domain_score < 0.4
 
-                # 🔸 Overconfident OOD warning
+                # 🔸 Collect warning messages per image
+                warnings_list = []
+                if quality_warning:
+                    warnings_list.append(quality_warning)
                 if conf_val > 0.7 and domain_score < 0.3:
-                    st.warning(
-                        f"⚠️ High confidence ({conf_val:.2f}) but very low domain score "
+                    warning_text = (
+                        f"High confidence ({conf_val:.2f}) but very low domain score "
                         f"({domain_score:.2f}) – likely overconfident on out-of-domain data."
                     )
+                    st.warning(f"⚠️ {name}: {warning_text}")
+                    warnings_list.append(warning_text)
+
+                combined_warning = " | ".join(warnings_list) if warnings_list else ""
 
                 if is_low_conf or is_low_domain or quality_warning:
                     out_domain += 1
@@ -191,7 +198,7 @@ with tab1:
                     "Confidence": round(conf_val, 4),
                     "Domain Score": round(domain_score, 3),
                     "Preview": img,
-                    "Warning": quality_warning if quality_warning else "",
+                    "Warning": combined_warning,
                     "Low Confidence": is_low_conf,
                     "Low Domain Score": is_low_domain
                 })
