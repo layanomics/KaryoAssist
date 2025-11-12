@@ -86,7 +86,7 @@ def compute_domain_score(img):
     """
     Adaptive domain score calibrated for binary BioImLAB chromosome BMPs.
     Works with extremely bright, low-contrast, sparse-black images.
-    Returns a float between 0 and 1 (higher = more in-domain).
+    Returns (score, mu, sigma, dark_ratio) where score is 0..1 (higher = more in-domain).
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
     mu = gray.mean()
@@ -102,10 +102,9 @@ def compute_domain_score(img):
     dark_score = np.clip((dark_ratio - 0.002) / (0.06 - 0.002), 0, 1)
 
     # --- Combine with adaptive weights
-    # If all three are within typical range → high score
     score = (0.4 * mu_score + 0.3 * sigma_score + 0.3 * dark_score)
     score = float(np.clip(score, 0.0, 1.0))
-    return score
+    return score, float(mu), float(sigma), float(dark_ratio)
 
 # ----------------------------------------------------------
 # Initialize model once
@@ -168,7 +167,7 @@ with tab1:
                     name = img_item.name
 
                 quality_warning = check_image_quality(img)
-                domain_score = compute_domain_score(img)
+                domain_score, mu, sigma, dark_ratio = compute_domain_score(img)
 
                 x = transform(img).unsqueeze(0)
                 with torch.inference_mode():
@@ -210,8 +209,8 @@ with tab1:
                     "Low Confidence": is_low_conf,
                     "Low Domain Score": is_low_domain
                 })
+                # Debug caption now has access to the variables:
                 st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
-
 
             except Exception as e:
                 st.error(f"❌ Error processing {name}: {e}")
@@ -308,7 +307,6 @@ with tab1:
                 st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
                 st.write(f"**Average Domain Score:** {df['Domain Score'].mean():.4f}")
                 st.write(f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)")
-
 
 with tab3:
     st.header("ℹ️ About the Model")
