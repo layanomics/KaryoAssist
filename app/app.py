@@ -10,6 +10,7 @@ import zipfile
 import io
 import tempfile
 import matplotlib.pyplot as plt
+import numpy as np  # 👈 for quality checks
 
 # ----------------------------------------------------------
 # Streamlit Page Config
@@ -46,11 +47,9 @@ def load_model():
 
     ckpt = torch.load(model_path, map_location="cpu")
 
-    # Build architecture
     model = models.resnet50(weights=None)
     model.fc = nn.Linear(model.fc.in_features, 24)
 
-    # Load checkpoint safely
     if "model" in ckpt:
         state_dict = ckpt["model"]
     elif "state_dict" in ckpt:
@@ -61,12 +60,27 @@ def load_model():
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
-    # Real chromosome labels
     class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
 
     st.sidebar.success(f"✅ Model loaded successfully")
     st.sidebar.caption(f"Detected {len(class_names)} classes: 1–22, X, Y")
     return model, class_names
+
+
+# ----------------------------------------------------------
+# Image Quality / Domain Check
+# ----------------------------------------------------------
+def check_image_quality(img, min_size=50, min_contrast=15):
+    """Return warning string if image looks out-of-domain or poor quality."""
+    w, h = img.size
+    if w < min_size or h < min_size:
+        return "Image too small (likely not a chromosome crop)."
+    gray = np.array(img.convert("L"))
+    contrast = gray.std()
+    if contrast < min_contrast:
+        return f"Low contrast (σ={contrast:.1f}) – may be out of domain."
+    return None
+
 
 # ----------------------------------------------------------
 # Initialize model once
@@ -98,7 +112,6 @@ with tab1:
         image_files = []
         temp_dir = tempfile.mkdtemp()
 
-        # Gather all images (individual or inside ZIP)
         for item in uploaded_items:
             if item.name.lower().endswith(".zip"):
                 st.info(f"📦 Extracting ZIP folder: {item.name}")
@@ -118,6 +131,9 @@ with tab1:
         st.info(f"🔬 Processing {len(image_files)} image(s)...")
         progress = st.progress(0)
 
+        # Counters for in-domain / out-of-domain
+        in_domain, out_domain = 0, 0
+
         for idx_img, img_item in enumerate(image_files):
             try:
                 # Handle files from zip or direct upload
@@ -128,6 +144,9 @@ with tab1:
                     img = Image.open(img_item).convert("RGB")
                     name = img_item.name
 
+                # --- Quality check ---
+                quality_warning = check_image_quality(img)
+
                 x = transform(img).unsqueeze(0)
                 with torch.inference_mode():
                     logits = model(x)
@@ -136,11 +155,21 @@ with tab1:
                 conf, idx = torch.max(probs, dim=0)
                 pred_label = class_names[idx.item()]
 
+                # --- Domain/Confidence check ---
+                conf_val = float(conf)
+                is_low_conf = conf_val < 0.5
+                if is_low_conf or quality_warning:
+                    out_domain += 1
+                else:
+                    in_domain += 1
+
                 results.append({
                     "Image": name,
                     "Predicted Class": pred_label,
-                    "Confidence": round(float(conf), 4),
-                    "Preview": img
+                    "Confidence": round(conf_val, 4),
+                    "Preview": img,
+                    "Warning": quality_warning if quality_warning else "",
+                    "Low Confidence": is_low_conf
                 })
 
             except Exception as e:
@@ -157,14 +186,15 @@ with tab1:
             df = pd.DataFrame([{
                 "Image": r["Image"],
                 "Predicted Class": r["Predicted Class"],
-                "Confidence": r["Confidence"]
+                "Confidence": r["Confidence"],
+                "Warning": r["Warning"]
             } for r in results])
 
             st.subheader("📊 Prediction Results")
-            st.dataframe(df.style.background_gradient(
-                subset=["Confidence"],
-                cmap="Blues"
-            ), use_container_width=True)
+            styled_df = df.style.background_gradient(
+                subset=["Confidence"], cmap="Blues"
+            )
+            st.dataframe(styled_df, use_container_width=True)
 
             # Downloadable CSV
             csv = df.to_csv(index=False).encode("utf-8")
@@ -175,6 +205,13 @@ with tab1:
                 mime="text/csv"
             )
 
+            # Out-of-domain summary
+            st.markdown("---")
+            st.markdown("### 🧠 Domain Check Summary")
+            col1, col2 = st.columns(2)
+            col1.metric("✅ Likely In-domain", in_domain)
+            col2.metric("⚠️ Possibly Out-of-domain", out_domain)
+
             # ------------------------------------------------------
             # Show image previews in a grid
             # ------------------------------------------------------
@@ -182,11 +219,14 @@ with tab1:
             cols = st.columns(3)
             for i, r in enumerate(results):
                 with cols[i % 3]:
-                    st.image(
-                        r["Preview"],
-                        caption=f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})",
-                        use_column_width=True
-                    )
+                    caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
+                    if r["Warning"] or r["Low Confidence"]:
+                        caption += " ⚠️"
+                    st.image(r["Preview"], caption=caption, use_column_width=True)
+                    if r["Warning"]:
+                        st.warning(r["Warning"])
+                    if r["Low Confidence"]:
+                        st.warning(f"Low model confidence ({r['Confidence']:.2f}) – may be out of domain.")
 
             # ------------------------------------------------------
             # Analytics Tab
@@ -194,12 +234,10 @@ with tab1:
             with tab2:
                 st.header("📈 Dataset Analytics")
 
-                # Class distribution
                 st.subheader("📊 Class Distribution")
                 counts = df["Predicted Class"].value_counts().sort_index()
                 st.bar_chart(counts)
 
-                # Confidence histogram
                 st.subheader("📉 Confidence Histogram")
                 fig, ax = plt.subplots()
                 ax.hist(df["Confidence"], bins=10, color="skyblue", edgecolor="black")
@@ -208,7 +246,6 @@ with tab1:
                 ax.set_title("Confidence Score Distribution")
                 st.pyplot(fig)
 
-                # Summary metrics
                 st.subheader("📋 Summary")
                 st.write(f"**Total Images:** {len(df)}")
                 st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
@@ -236,5 +273,5 @@ with tab3:
     - 📦 Support larger model architectures (EfficientNet, ViT)  
     - ☁️ Integrate HuggingFace or GDrive model hosting  
     - 📄 Generate downloadable PDF reports  
+    - 🧠 Improve OOD detection using feature similarity (embedding space)
     """)
-
