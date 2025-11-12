@@ -84,32 +84,29 @@ def check_image_quality(img, min_size=20, min_contrast=8):
 
 def compute_domain_score(img):
     """
-    Robust OOD score for BioImLAB-style chromosome .bmp images
-    (binary / thresholded white-background chromosome crops).
+    Final calibrated OOD score for BioImLAB-style binary chromosome BMP images.
     Returns 0..1 (higher = more in-domain).
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
 
-    # Core statistics
-    mu = gray.mean()                  # brightness (usually high, 180–250)
-    sigma = gray.std()                # contrast (typically low-mid, 20–60)
-    dark_ratio = np.mean(gray < 100)  # fraction of black/dark chromosome pixels
+    # Compute simple pixel-level stats
+    mu = gray.mean()                  # brightness (240–255 typical)
+    sigma = gray.std()                # contrast (10–30 typical)
+    dark_ratio = np.mean(gray < 128)  # dark pixel fraction (<0.05 typical)
 
-    # Target ranges tuned for BioImLAB crops
-    # White background -> mean ~210±40, dark ratio ~0.03–0.15, contrast moderate
+    # Smooth similarity function
     def smooth_clip(x, c, w):
-        return np.exp(-abs(x - c) / w)
+        return np.exp(-0.5 * ((x - c) / w) ** 2)
 
-    s_mu = smooth_clip(mu, c=210, w=60)       # Brightness fit
-    s_sigma = smooth_clip(sigma, c=40, w=30)  # Contrast fit
-    s_dark = smooth_clip(dark_ratio, c=0.07, w=0.07)  # Chromosome density fit
+    # ✅ Centers tuned for thresholded BioImLAB crops (binary .bmp)
+    s_mu = smooth_clip(mu, c=245, w=25)        # Bright white background
+    s_sigma = smooth_clip(sigma, c=20, w=15)   # Low contrast
+    s_dark = smooth_clip(dark_ratio, c=0.02, w=0.02)  # Small chromosome area
 
-    # Combine features
+    # Combine the three (geometric mean)
     score = (s_mu * s_sigma * s_dark) ** (1 / 3)
-
-    # Prevent extreme 0.0 flattening (smooth curve)
-    score = np.power(score, 0.5)
     return float(np.clip(score, 0.0, 1.0))
+
 
 
 # ----------------------------------------------------------
