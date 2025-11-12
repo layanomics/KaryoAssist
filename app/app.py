@@ -84,30 +84,28 @@ def check_image_quality(img, min_size=20, min_contrast=8):
 
 def compute_domain_score(img):
     """
-    Final calibrated OOD score for BioImLAB-style binary chromosome BMP images.
-    Returns 0..1 (higher = more in-domain).
+    Adaptive domain score calibrated for binary BioImLAB chromosome BMPs.
+    Works with extremely bright, low-contrast, sparse-black images.
+    Returns a float between 0 and 1 (higher = more in-domain).
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
+    mu = gray.mean()
+    sigma = gray.std()
+    dark_ratio = np.mean(gray < 150)
 
-    # Compute simple pixel-level stats
-    mu = gray.mean()                  # brightness (240–255 typical)
-    sigma = gray.std()                # contrast (10–30 typical)
-    dark_ratio = np.mean(gray < 128)  # dark pixel fraction (<0.05 typical)
+    # --- Normalize stats dynamically (fit to BioImLAB ranges)
+    # mean: 230–255 (white background)
+    mu_score = np.clip((mu - 220) / (255 - 220), 0, 1)
+    # contrast: 5–40
+    sigma_score = np.clip((sigma - 5) / (40 - 5), 0, 1)
+    # dark pixel ratio: 0.002–0.06 (chromosome area)
+    dark_score = np.clip((dark_ratio - 0.002) / (0.06 - 0.002), 0, 1)
 
-    # Smooth similarity function
-    def smooth_clip(x, c, w):
-        return np.exp(-0.5 * ((x - c) / w) ** 2)
-
-    # ✅ Centers tuned for thresholded BioImLAB crops (binary .bmp)
-    s_mu = smooth_clip(mu, c=245, w=25)        # Bright white background
-    s_sigma = smooth_clip(sigma, c=20, w=15)   # Low contrast
-    s_dark = smooth_clip(dark_ratio, c=0.02, w=0.02)  # Small chromosome area
-
-    # Combine the three (geometric mean)
-    score = (s_mu * s_sigma * s_dark) ** (1 / 3)
-    return float(np.clip(score, 0.0, 1.0))
-
-
+    # --- Combine with adaptive weights
+    # If all three are within typical range → high score
+    score = (0.4 * mu_score + 0.3 * sigma_score + 0.3 * dark_score)
+    score = float(np.clip(score, 0.0, 1.0))
+    return score
 
 # ----------------------------------------------------------
 # Initialize model once
@@ -212,6 +210,8 @@ with tab1:
                     "Low Confidence": is_low_conf,
                     "Low Domain Score": is_low_domain
                 })
+                    st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
+
 
             except Exception as e:
                 st.error(f"❌ Error processing {name}: {e}")
