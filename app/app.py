@@ -26,41 +26,40 @@ def load_model():
 
     ckpt = torch.load(model_path, map_location="cpu")
 
-    # Detect the checkpoint type
+    # Case 1: Full model object saved directly
     if isinstance(ckpt, torch.nn.Module):
-        # Case 1: you saved the full model
         st.info("✅ Loaded a full PyTorch model object.")
         model = ckpt
-        class_names = [str(i) for i in range(1, 25)]
 
+    # Case 2: Dictionary checkpoint (with or without state_dict)
     elif isinstance(ckpt, dict):
-        # Case 2: a checkpoint dictionary
         if "state_dict" in ckpt:
             st.info("✅ Loaded model from 'state_dict' checkpoint.")
             model = models.resnet50(weights=None)
-            class_names = ckpt.get("class_names", [str(i) for i in range(1, 25)])
-            model.fc = nn.Linear(model.fc.in_features, len(class_names))
+            model.fc = nn.Linear(model.fc.in_features, ckpt["state_dict"]["fc.weight"].shape[0])
             model.load_state_dict(ckpt["state_dict"], strict=False)
         elif "model" in ckpt and isinstance(ckpt["model"], torch.nn.Module):
             st.info("✅ Loaded model from 'model' key in checkpoint.")
             model = ckpt["model"]
-            class_names = ckpt.get("class_names", [str(i) for i in range(1, 25)])
         else:
             st.warning("⚠️ Checkpoint dict has unexpected keys — trying to reconstruct a ResNet model.")
             model = models.resnet50(weights=None)
-            class_names = [str(i) for i in range(1, 25)]
             try:
                 model.load_state_dict(ckpt, strict=False)
             except Exception as e:
                 st.error(f"❌ Failed to load state dict automatically: {e}")
                 st.stop()
-
     else:
         st.error("❌ Unrecognized model format.")
         st.stop()
 
+    # Automatically detect number of classes
+    num_classes = getattr(model.fc, "out_features", 24)
+    class_names = [f"Class {i+1}" for i in range(num_classes)]
+
     model.eval()
     st.success(f"✅ Model loaded successfully from: {model_path}")
+    st.caption(f"Detected {num_classes} output classes.")
     return model, class_names
 
 # ----------------------------------------------------------
@@ -91,15 +90,22 @@ if uploaded:
             probs = torch.softmax(logits, dim=1).squeeze(0)
 
         conf, idx = torch.max(probs, dim=0)
-        st.success(f"**Predicted class:** {class_names[idx.item()]} | Confidence: {conf:.4f}")
+
+        # Safety check for class index
+        pred_class = idx.item()
+        if pred_class >= len(class_names):
+            st.warning(f"⚠️ Predicted index {pred_class} out of range ({len(class_names)} classes detected).")
+        else:
+            st.success(f"**Predicted class:** {class_names[pred_class]} | Confidence: {conf:.4f}")
 
         # Top-5 predictions table
         topk = torch.topk(probs, k=min(5, len(class_names)))
         st.subheader("Top-5 Predictions")
         st.table({
-            "Class": [class_names[i] for i in topk.indices.tolist()],
+            "Class": [class_names[i] if i < len(class_names) else f"Unknown({i})" for i in topk.indices.tolist()],
             "Confidence": [round(float(p), 4) for p in topk.values.tolist()]
         })
 else:
     st.info("⬆️ Please upload a chromosome image to begin.")
+
 
