@@ -68,9 +68,9 @@ def load_model():
 
 
 # ----------------------------------------------------------
-# Image Quality / Domain Check
+# Image Quality / Domain Check (✅ Calibrated for BioImLAB)
 # ----------------------------------------------------------
-def check_image_quality(img, min_size=50, min_contrast=15):
+def check_image_quality(img, min_size=20, min_contrast=8):
     """Return warning string if image looks out-of-domain or poor quality."""
     w, h = img.size
     if w < min_size or h < min_size:
@@ -84,15 +84,25 @@ def check_image_quality(img, min_size=50, min_contrast=15):
 
 def compute_domain_score(img):
     """
-    Heuristic OOD score based on shape and pixel statistics.
-    Returns a float between 0 and 1 (lower = more likely OOD).
+    Calibrated heuristic OOD score for BioImLAB-style crops.
+    Returns 0..1 (higher = more in-domain).
     """
-    gray = np.array(img.convert("L"))
-    mean_intensity = gray.mean()
-    contrast = gray.std()
-    binary_ratio = np.mean(gray < 128)
-    domain_score = np.exp(-abs(contrast - 50) / 20) * (1 - abs(binary_ratio - 0.3)) * (1 - abs(mean_intensity - 150) / 150)
-    return float(max(0.0, min(1.0, domain_score)))
+    gray = np.array(img.convert("L"), dtype=np.uint8)
+    mu = float(gray.mean())          # background brightness
+    sigma = float(gray.std())        # contrast
+    fg_ratio = float((gray < 200).mean())  # dark-pixel ratio (chromosome area)
+
+    def bell(x, c, w):
+        """Gaussian-like bell; 1 near c, decays with width w."""
+        return np.exp(-((x - c) / w) ** 2)
+
+    # Tuned for bright backgrounds and typical chromosome regions
+    s_mu    = bell(mu, c=200, w=60)
+    s_sigma = bell(sigma, c=80, w=40)
+    s_fg    = bell(fg_ratio, c=0.10, w=0.08)
+
+    score = (s_mu * s_sigma * s_fg) ** (1/3)
+    return float(max(0.0, min(1.0, score)))
 
 
 # ----------------------------------------------------------
@@ -147,8 +157,6 @@ with tab1:
 
         # Counters for in-domain / out-of-domain
         in_domain, out_domain = 0, 0
-
-        # Store grouped OOD alerts
         st.session_state["ood_alerts"] = []
 
         for idx_img, img_item in enumerate(image_files):
@@ -174,13 +182,13 @@ with tab1:
 
                 conf_val = float(conf)
                 is_low_conf = conf_val < 0.7
-                is_low_domain = domain_score < 0.4
+                is_low_domain = domain_score < 0.15  # ✅ Calibrated threshold
 
                 # 🔸 Collect warning messages per image
                 warnings_list = []
                 if quality_warning:
                     warnings_list.append(quality_warning)
-                if conf_val > 0.7 and domain_score < 0.3:
+                if conf_val > 0.8 and domain_score < 0.10:
                     warning_text = (
                         f"High confidence ({conf_val:.2f}) but very low domain score "
                         f"({domain_score:.2f}) – likely overconfident on out-of-domain data."
@@ -230,7 +238,6 @@ with tab1:
                 "Warning": r["Warning"]
             } for r in results])
 
-            # 🔹 Add Domain Flag
             df["Domain Flag"] = df["Domain Score"].apply(
                 lambda x: "⚠️ Out-of-domain" if x < 0.3 else "✅ In-domain"
             )
