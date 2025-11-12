@@ -148,6 +148,9 @@ with tab1:
         # Counters for in-domain / out-of-domain
         in_domain, out_domain = 0, 0
 
+        # Store grouped OOD alerts
+        st.session_state["ood_alerts"] = []
+
         for idx_img, img_item in enumerate(image_files):
             try:
                 if isinstance(img_item, str):
@@ -182,7 +185,7 @@ with tab1:
                         f"High confidence ({conf_val:.2f}) but very low domain score "
                         f"({domain_score:.2f}) – likely overconfident on out-of-domain data."
                     )
-                    st.warning(f"⚠️ {name}: {warning_text}")
+                    st.session_state["ood_alerts"].append(f"{name}: {warning_text}")
                     warnings_list.append(warning_text)
 
                 combined_warning = " | ".join(warnings_list) if warnings_list else ""
@@ -209,6 +212,11 @@ with tab1:
             progress.progress((idx_img + 1) / len(image_files))
 
         progress.empty()
+
+        # 🔹 Show grouped OOD warnings once
+        if st.session_state["ood_alerts"]:
+            st.warning("⚠️ **Overconfident OOD Predictions:**\n" + "\n".join(st.session_state["ood_alerts"]))
+            st.session_state["ood_alerts"].clear()
 
         # ------------------------------------------------------
         # Display results table
@@ -293,8 +301,8 @@ with tab1:
 
                 st.subheader("📋 Summary")
                 st.write(f"**Total Images:** {len(df)}")
-                st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
-                st.write(f"**Average Domain Score:** {df['Domain Score'].mean():.4f}")
+                st.write(f"**Average Confidence:** {df['Confidence"].mean():.4f}")
+                st.write(f"**Average Domain Score:** {df['Domain Score"].mean():.4f}")
                 st.write(f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)")
 
 with tab3:
