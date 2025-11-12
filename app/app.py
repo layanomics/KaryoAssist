@@ -9,13 +9,29 @@ import pandas as pd
 import zipfile
 import io
 import tempfile
+import matplotlib.pyplot as plt
 
 # ----------------------------------------------------------
 # Streamlit Page Config
 # ----------------------------------------------------------
 st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="wide")
-st.title("🧬 KaryoAssist")
-st.markdown("Upload **images or an entire folder (.zip)** of chromosome samples to predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
+
+# Sidebar Info
+st.sidebar.title("⚙️ Settings & Info")
+st.sidebar.markdown("""
+**KaryoAssist** — an AI-powered assistant for automated chromosome classification.  
+Upload single images, multiple images, or a `.zip` folder for batch prediction.
+""")
+st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes: 1–22, X, Y).")
+
+# ----------------------------------------------------------
+# Tabs Layout
+# ----------------------------------------------------------
+tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Model"])
+
+with tab1:
+    st.title("🧬 KaryoAssist")
+    st.markdown("Upload **images or an entire folder (.zip)** of chromosome samples to predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
 
 # ----------------------------------------------------------
 # Load Model (24 chromosome classes)
@@ -48,8 +64,8 @@ def load_model():
     # Real chromosome labels
     class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
 
-    st.success(f"✅ Model loaded successfully from: {model_path}")
-    st.caption(f"Detected {len(class_names)} chromosome classes: 1–22, X, Y")
+    st.sidebar.success(f"✅ Model loaded successfully")
+    st.sidebar.caption(f"Detected {len(class_names)} classes: 1–22, X, Y")
     return model, class_names
 
 # ----------------------------------------------------------
@@ -70,90 +86,155 @@ transform = T.Compose([
 # ----------------------------------------------------------
 # File or Folder Upload
 # ----------------------------------------------------------
-uploaded_items = st.file_uploader(
-    "📁 Upload images (PNG/JPG/BMP) or a folder as .zip",
-    type=["png", "jpg", "jpeg", "bmp", "zip"],
-    accept_multiple_files=True
-)
+with tab1:
+    uploaded_items = st.file_uploader(
+        "📁 Upload images (PNG/JPG/BMP) or a folder as .zip",
+        type=["png", "jpg", "jpeg", "bmp", "zip"],
+        accept_multiple_files=True
+    )
 
-# ----------------------------------------------------------
-# Batch Prediction
-# ----------------------------------------------------------
-if uploaded_items:
-    results = []
-    image_files = []
+    if uploaded_items:
+        results = []
+        image_files = []
+        temp_dir = tempfile.mkdtemp()
 
-    # Temporary extraction directory for ZIPs
-    temp_dir = tempfile.mkdtemp()
-
-    # Gather all images (individual or inside ZIP)
-    for item in uploaded_items:
-        if item.name.lower().endswith(".zip"):
-            st.info(f"📦 Extracting ZIP folder: {item.name}")
-            with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
-                zf.extractall(temp_dir)
-            for root, _, files in os.walk(temp_dir):
-                for f in files:
-                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
-                        image_files.append(os.path.join(root, f))
-        else:
-            image_files.append(item)
-
-    if not image_files:
-        st.warning("⚠️ No valid image files found. Please upload PNG, JPG, or BMP images.")
-        st.stop()
-
-    st.info(f"🔬 Processing {len(image_files)} image(s)...")
-
-    for img_item in image_files:
-        try:
-            # Handle files from zip or direct upload
-            if isinstance(img_item, str):
-                img = Image.open(img_item).convert("RGB")
-                name = os.path.basename(img_item)
+        # Gather all images (individual or inside ZIP)
+        for item in uploaded_items:
+            if item.name.lower().endswith(".zip"):
+                st.info(f"📦 Extracting ZIP folder: {item.name}")
+                with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
+                    zf.extractall(temp_dir)
+                for root, _, files in os.walk(temp_dir):
+                    for f in files:
+                        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                            image_files.append(os.path.join(root, f))
             else:
-                img = Image.open(img_item).convert("RGB")
-                name = img_item.name
+                image_files.append(item)
 
-            x = transform(img).unsqueeze(0)
-            with torch.inference_mode():
-                logits = model(x)
-                probs = torch.softmax(logits, dim=1).squeeze(0)
+        if not image_files:
+            st.warning("⚠️ No valid image files found. Please upload PNG, JPG, or BMP images.")
+            st.stop()
 
-            conf, idx = torch.max(probs, dim=0)
-            pred_label = class_names[idx.item()]
+        st.info(f"🔬 Processing {len(image_files)} image(s)...")
+        progress = st.progress(0)
 
-            results.append({
-                "Image": name,
-                "Predicted Class": pred_label,
-                "Confidence": round(float(conf), 4),
-                "Preview": img
-            })
+        for idx_img, img_item in enumerate(image_files):
+            try:
+                # Handle files from zip or direct upload
+                if isinstance(img_item, str):
+                    img = Image.open(img_item).convert("RGB")
+                    name = os.path.basename(img_item)
+                else:
+                    img = Image.open(img_item).convert("RGB")
+                    name = img_item.name
 
-        except Exception as e:
-            st.error(f"❌ Error processing {name}: {e}")
+                x = transform(img).unsqueeze(0)
+                with torch.inference_mode():
+                    logits = model(x)
+                    probs = torch.softmax(logits, dim=1).squeeze(0)
 
-    # ------------------------------------------------------
-    # Display results table
-    # ------------------------------------------------------
-    if results:
-        df = pd.DataFrame([{
-            "Image": r["Image"],
-            "Predicted Class": r["Predicted Class"],
-            "Confidence": r["Confidence"]
-        } for r in results])
+                conf, idx = torch.max(probs, dim=0)
+                pred_label = class_names[idx.item()]
 
-        st.subheader("📊 Prediction Results")
-        st.dataframe(df, use_container_width=True)
+                results.append({
+                    "Image": name,
+                    "Predicted Class": pred_label,
+                    "Confidence": round(float(conf), 4),
+                    "Preview": img
+                })
+
+            except Exception as e:
+                st.error(f"❌ Error processing {name}: {e}")
+
+            progress.progress((idx_img + 1) / len(image_files))
+
+        progress.empty()
 
         # ------------------------------------------------------
-        # Show image previews in a grid
+        # Display results table
         # ------------------------------------------------------
-        st.subheader("🖼️ Image Previews")
-        cols = st.columns(3)
-        for i, r in enumerate(results):
-            with cols[i % 3]:
-                st.image(r["Preview"], caption=f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})", use_column_width=True)
+        if results:
+            df = pd.DataFrame([{
+                "Image": r["Image"],
+                "Predicted Class": r["Predicted Class"],
+                "Confidence": r["Confidence"]
+            } for r in results])
 
-else:
-    st.info("⬆️ Please upload individual chromosome images or a folder (.zip) to begin.")
+            st.subheader("📊 Prediction Results")
+            st.dataframe(df.style.background_gradient(
+                subset=["Confidence"],
+                cmap="Blues"
+            ), use_container_width=True)
+
+            # Downloadable CSV
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Download Results as CSV",
+                data=csv,
+                file_name="karyoassist_predictions.csv",
+                mime="text/csv"
+            )
+
+            # ------------------------------------------------------
+            # Show image previews in a grid
+            # ------------------------------------------------------
+            st.subheader("🖼️ Image Previews")
+            cols = st.columns(3)
+            for i, r in enumerate(results):
+                with cols[i % 3]:
+                    st.image(
+                        r["Preview"],
+                        caption=f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})",
+                        use_column_width=True
+                    )
+
+            # ------------------------------------------------------
+            # Analytics Tab
+            # ------------------------------------------------------
+            with tab2:
+                st.header("📈 Dataset Analytics")
+
+                # Class distribution
+                st.subheader("📊 Class Distribution")
+                counts = df["Predicted Class"].value_counts().sort_index()
+                st.bar_chart(counts)
+
+                # Confidence histogram
+                st.subheader("📉 Confidence Histogram")
+                fig, ax = plt.subplots()
+                ax.hist(df["Confidence"], bins=10, color="skyblue", edgecolor="black")
+                ax.set_xlabel("Confidence")
+                ax.set_ylabel("Frequency")
+                ax.set_title("Confidence Score Distribution")
+                st.pyplot(fig)
+
+                # Summary metrics
+                st.subheader("📋 Summary")
+                st.write(f"**Total Images:** {len(df)}")
+                st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
+                st.write(f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)")
+
+with tab3:
+    st.header("ℹ️ About the Model")
+    st.markdown("""
+    **Model:** ResNet50 (fine-tuned)  
+    **Dataset:** BioImLAB Chromosome Dataset  
+    **Classes:** 1–22, X, Y (24 total)  
+    **Input Size:** 224 × 224 (RGB)  
+    **Training Details:**  
+    - Optimizer: Adam  
+    - Loss: CrossEntropy  
+    - Epochs: Variable (fine-tuned on curated data)  
+
+    **Developed by:** Layan Essam  
+    **Purpose:** Automated Karyotyping Assistant to aid cytogenetic analysis in research and diagnostic labs.
+    """)
+
+    st.markdown("💡 Future Enhancements:")
+    st.markdown("""
+    - 🔥 Add Grad-CAM explainability (heatmaps)  
+    - 📦 Support larger model architectures (EfficientNet, ViT)  
+    - ☁️ Integrate HuggingFace or GDrive model hosting  
+    - 📄 Generate downloadable PDF reports  
+    """)
+
