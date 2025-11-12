@@ -5,13 +5,14 @@ import torchvision.transforms as T
 import torchvision.models as models
 from PIL import Image
 import os
+import pandas as pd
 
 # ----------------------------------------------------------
 # Streamlit Page Config
 # ----------------------------------------------------------
-st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="centered")
+st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="wide")
 st.title("🧬 KaryoAssist")
-st.markdown("Upload a chromosome image to predict its class using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
+st.markdown("Upload one or more chromosome images to predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
 
 # ----------------------------------------------------------
 # Load Model (24 chromosome classes)
@@ -54,7 +55,7 @@ def load_model():
 model, class_names = load_model()
 
 # ----------------------------------------------------------
-# Image Preprocessing & Prediction
+# Image Preprocessing
 # ----------------------------------------------------------
 transform = T.Compose([
     T.Resize((224, 224)),
@@ -63,33 +64,64 @@ transform = T.Compose([
                 [0.229, 0.224, 0.225]),
 ])
 
-uploaded = st.file_uploader("📤 Upload a chromosome image (PNG/JPG/BMP)", type=["png", "jpg", "jpeg", "bmp"])
+# ----------------------------------------------------------
+# File Upload (Multiple)
+# ----------------------------------------------------------
+uploaded_files = st.file_uploader(
+    "📤 Upload one or more chromosome images (PNG/JPG/BMP)",
+    type=["png", "jpg", "jpeg", "bmp"],
+    accept_multiple_files=True
+)
 
-if uploaded:
-    img = Image.open(uploaded).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_column_width=True)
+# ----------------------------------------------------------
+# Batch Prediction
+# ----------------------------------------------------------
+if uploaded_files:
+    results = []
+    st.info(f"🔬 Processing {len(uploaded_files)} image(s)...")
 
-    with st.spinner("🔬 Predicting..."):
-        x = transform(img).unsqueeze(0)
-        with torch.inference_mode():
-            logits = model(x)
-            probs = torch.softmax(logits, dim=1).squeeze(0)
+    for uploaded in uploaded_files:
+        try:
+            img = Image.open(uploaded).convert("RGB")
+            x = transform(img).unsqueeze(0)
 
-        conf, idx = torch.max(probs, dim=0)
-        idx = idx.item()
+            with torch.inference_mode():
+                logits = model(x)
+                probs = torch.softmax(logits, dim=1).squeeze(0)
 
-        if idx < len(class_names):
-            pred_class = class_names[idx]
-            st.success(f"**Predicted class:** {pred_class} | Confidence: {conf:.4f}")
-        else:
-            st.warning(f"⚠️ Predicted index {idx} is out of range (model output mismatch).")
+            conf, idx = torch.max(probs, dim=0)
+            pred_label = class_names[idx.item()]
 
-        # Top-5 predictions
-        topk = torch.topk(probs, k=5)
-        st.subheader("Top-5 Predictions")
-        st.table({
-            "Class": [class_names[i] if i < len(class_names) else f"Unknown({i})" for i in topk.indices.tolist()],
-            "Confidence": [round(float(p), 4) for p in topk.values.tolist()]
-        })
+            results.append({
+                "Image": uploaded.name,
+                "Predicted Class": pred_label,
+                "Confidence": round(float(conf), 4),
+                "Preview": img
+            })
+
+        except Exception as e:
+            st.error(f"❌ Error processing {uploaded.name}: {e}")
+
+    # ------------------------------------------------------
+    # Display results
+    # ------------------------------------------------------
+    df = pd.DataFrame([{
+        "Image": r["Image"],
+        "Predicted Class": r["Predicted Class"],
+        "Confidence": r["Confidence"]
+    } for r in results])
+
+    st.subheader("📊 Prediction Results")
+    st.dataframe(df, use_container_width=True)
+
+    # ------------------------------------------------------
+    # Show image previews in a grid
+    # ------------------------------------------------------
+    st.subheader("🖼️ Image Previews")
+    cols = st.columns(3)
+    for i, r in enumerate(results):
+        with cols[i % 3]:
+            st.image(r["Preview"], caption=f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})", use_column_width=True)
+
 else:
-    st.info("⬆️ Please upload a chromosome image to begin.")
+    st.info("⬆️ Please upload one or more chromosome images to begin.")
