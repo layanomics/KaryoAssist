@@ -6,13 +6,16 @@ import torchvision.models as models
 from PIL import Image
 import os
 import pandas as pd
+import zipfile
+import io
+import tempfile
 
 # ----------------------------------------------------------
 # Streamlit Page Config
 # ----------------------------------------------------------
 st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="wide")
 st.title("🧬 KaryoAssist")
-st.markdown("Upload one or more chromosome images to predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
+st.markdown("Upload **images or an entire folder (.zip)** of chromosome samples to predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
 
 # ----------------------------------------------------------
 # Load Model (24 chromosome classes)
@@ -65,26 +68,54 @@ transform = T.Compose([
 ])
 
 # ----------------------------------------------------------
-# File Upload (Multiple)
+# File or Folder Upload
 # ----------------------------------------------------------
-uploaded_files = st.file_uploader(
-    "📤 Upload one or more chromosome images (PNG/JPG/BMP)",
-    type=["png", "jpg", "jpeg", "bmp"],
+uploaded_items = st.file_uploader(
+    "📁 Upload images (PNG/JPG/BMP) or a folder as .zip",
+    type=["png", "jpg", "jpeg", "bmp", "zip"],
     accept_multiple_files=True
 )
 
 # ----------------------------------------------------------
 # Batch Prediction
 # ----------------------------------------------------------
-if uploaded_files:
+if uploaded_items:
     results = []
-    st.info(f"🔬 Processing {len(uploaded_files)} image(s)...")
+    image_files = []
 
-    for uploaded in uploaded_files:
+    # Temporary extraction directory for ZIPs
+    temp_dir = tempfile.mkdtemp()
+
+    # Gather all images (individual or inside ZIP)
+    for item in uploaded_items:
+        if item.name.lower().endswith(".zip"):
+            st.info(f"📦 Extracting ZIP folder: {item.name}")
+            with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
+                zf.extractall(temp_dir)
+            for root, _, files in os.walk(temp_dir):
+                for f in files:
+                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                        image_files.append(os.path.join(root, f))
+        else:
+            image_files.append(item)
+
+    if not image_files:
+        st.warning("⚠️ No valid image files found. Please upload PNG, JPG, or BMP images.")
+        st.stop()
+
+    st.info(f"🔬 Processing {len(image_files)} image(s)...")
+
+    for img_item in image_files:
         try:
-            img = Image.open(uploaded).convert("RGB")
-            x = transform(img).unsqueeze(0)
+            # Handle files from zip or direct upload
+            if isinstance(img_item, str):
+                img = Image.open(img_item).convert("RGB")
+                name = os.path.basename(img_item)
+            else:
+                img = Image.open(img_item).convert("RGB")
+                name = img_item.name
 
+            x = transform(img).unsqueeze(0)
             with torch.inference_mode():
                 logits = model(x)
                 probs = torch.softmax(logits, dim=1).squeeze(0)
@@ -93,35 +124,36 @@ if uploaded_files:
             pred_label = class_names[idx.item()]
 
             results.append({
-                "Image": uploaded.name,
+                "Image": name,
                 "Predicted Class": pred_label,
                 "Confidence": round(float(conf), 4),
                 "Preview": img
             })
 
         except Exception as e:
-            st.error(f"❌ Error processing {uploaded.name}: {e}")
+            st.error(f"❌ Error processing {name}: {e}")
 
     # ------------------------------------------------------
-    # Display results
+    # Display results table
     # ------------------------------------------------------
-    df = pd.DataFrame([{
-        "Image": r["Image"],
-        "Predicted Class": r["Predicted Class"],
-        "Confidence": r["Confidence"]
-    } for r in results])
+    if results:
+        df = pd.DataFrame([{
+            "Image": r["Image"],
+            "Predicted Class": r["Predicted Class"],
+            "Confidence": r["Confidence"]
+        } for r in results])
 
-    st.subheader("📊 Prediction Results")
-    st.dataframe(df, use_container_width=True)
+        st.subheader("📊 Prediction Results")
+        st.dataframe(df, use_container_width=True)
 
-    # ------------------------------------------------------
-    # Show image previews in a grid
-    # ------------------------------------------------------
-    st.subheader("🖼️ Image Previews")
-    cols = st.columns(3)
-    for i, r in enumerate(results):
-        with cols[i % 3]:
-            st.image(r["Preview"], caption=f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})", use_column_width=True)
+        # ------------------------------------------------------
+        # Show image previews in a grid
+        # ------------------------------------------------------
+        st.subheader("🖼️ Image Previews")
+        cols = st.columns(3)
+        for i, r in enumerate(results):
+            with cols[i % 3]:
+                st.image(r["Preview"], caption=f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})", use_column_width=True)
 
 else:
-    st.info("⬆️ Please upload one or more chromosome images to begin.")
+    st.info("⬆️ Please upload individual chromosome images or a folder (.zip) to begin.")
