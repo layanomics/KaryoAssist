@@ -5,7 +5,6 @@ import torch.nn as nn
 import torchvision.transforms as T
 import torchvision.models as models
 from PIL import Image
-from model.download_model import ensure_model
 
 st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="centered")
 
@@ -14,15 +13,22 @@ st.markdown("Upload a chromosome image to predict its class using a fine-tuned R
 
 @st.cache_resource
 def load_model():
-    model_path = ensure_model()
+    model_path = "app/model/best_resnet50_finetuned.ckpt"
     ckpt = torch.load(model_path, map_location="cpu")
-    class_names = ckpt.get("class_names", [str(i) for i in range(1, 25)])
-    model = models.resnet50(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, len(class_names))
-    model.load_state_dict(ckpt["state_dict"], strict=True)
+
+    # if you saved the full model
+    if not isinstance(ckpt, dict):
+        model = ckpt
+        class_names = [str(i) for i in range(1, 25)]
+    else:
+        model = models.resnet50(weights=None)
+        class_names = ckpt.get("class_names", [str(i) for i in range(1, 25)])
+        model.fc = nn.Linear(model.fc.in_features, len(class_names))
+        model.load_state_dict(ckpt["state_dict"], strict=False)
+
     model.eval()
     return model, class_names
-
+    
 model, class_names = load_model()
 
 transform = T.Compose([
