@@ -114,11 +114,13 @@ transform = T.Compose([
 # File or Folder Upload
 # ----------------------------------------------------------
 with tab1:
+    
     uploaded_items = st.file_uploader(
-        "📁 Upload images (PNG/JPG/BMP) or a folder as .zip",
-        type=["png", "jpg", "jpeg", "bmp", "zip"],
+        "📁 Upload images (PNG/JPG/BMP/TIFF) or a folder as .zip",
+        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
         accept_multiple_files=True
     )
+
 
     if uploaded_items:
         results = []
@@ -132,7 +134,7 @@ with tab1:
                     zf.extractall(temp_dir)
                 for root, _, files in os.walk(temp_dir):
                     for f in files:
-                        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
                             image_files.append(os.path.join(root, f))
             else:
                 image_files.append(item)
