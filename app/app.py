@@ -121,7 +121,6 @@ with tab1:
         accept_multiple_files=True
     )
 
-
     if uploaded_items:
         results = []
         image_files = []
@@ -174,6 +173,13 @@ with tab1:
                 is_low_conf = conf_val < 0.7
                 is_low_domain = domain_score < 0.4
 
+                # 🔸 Overconfident OOD warning
+                if conf_val > 0.7 and domain_score < 0.3:
+                    st.warning(
+                        f"⚠️ High confidence ({conf_val:.2f}) but very low domain score "
+                        f"({domain_score:.2f}) – likely overconfident on out-of-domain data."
+                    )
+
                 if is_low_conf or is_low_domain or quality_warning:
                     out_domain += 1
                 else:
@@ -208,6 +214,11 @@ with tab1:
                 "Domain Score": r["Domain Score"],
                 "Warning": r["Warning"]
             } for r in results])
+
+            # 🔹 Add Domain Flag
+            df["Domain Flag"] = df["Domain Score"].apply(
+                lambda x: "⚠️ Out-of-domain" if x < 0.3 else "✅ In-domain"
+            )
 
             st.subheader("📊 Prediction Results")
             styled_df = df.style.background_gradient(subset=["Confidence"], cmap="Blues") \
