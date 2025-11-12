@@ -11,10 +11,10 @@ import os
 # ----------------------------------------------------------
 st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="centered")
 st.title("🧬 KaryoAssist")
-st.markdown("Upload a chromosome image to predict its class using a fine-tuned ResNet50 model.")
+st.markdown("Upload a chromosome image to predict its class using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
 
 # ----------------------------------------------------------
-# Load Model (robust handling for any save format)
+# Load Model (24 chromosome classes)
 # ----------------------------------------------------------
 @st.cache_resource
 def load_model():
@@ -26,40 +26,26 @@ def load_model():
 
     ckpt = torch.load(model_path, map_location="cpu")
 
-    # Case 1: Full model object saved directly
-    if isinstance(ckpt, torch.nn.Module):
-        st.info("✅ Loaded a full PyTorch model object.")
-        model = ckpt
+    # Build architecture
+    model = models.resnet50(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, 24)
 
-    # Case 2: Dictionary checkpoint (with or without state_dict)
-    elif isinstance(ckpt, dict):
-        if "state_dict" in ckpt:
-            st.info("✅ Loaded model from 'state_dict' checkpoint.")
-            model = models.resnet50(weights=None)
-            model.fc = nn.Linear(model.fc.in_features, ckpt["state_dict"]["fc.weight"].shape[0])
-            model.load_state_dict(ckpt["state_dict"], strict=False)
-        elif "model" in ckpt and isinstance(ckpt["model"], torch.nn.Module):
-            st.info("✅ Loaded model from 'model' key in checkpoint.")
-            model = ckpt["model"]
-        else:
-            st.warning("⚠️ Checkpoint dict has unexpected keys — trying to reconstruct a ResNet model.")
-            model = models.resnet50(weights=None)
-            try:
-                model.load_state_dict(ckpt, strict=False)
-            except Exception as e:
-                st.error(f"❌ Failed to load state dict automatically: {e}")
-                st.stop()
+    # Load checkpoint safely
+    if "model" in ckpt:
+        state_dict = ckpt["model"]
+    elif "state_dict" in ckpt:
+        state_dict = {k.replace("model.", ""): v for k, v in ckpt["state_dict"].items()}
     else:
-        st.error("❌ Unrecognized model format.")
-        st.stop()
+        state_dict = ckpt
 
-    # Automatically detect number of classes
-    num_classes = getattr(model.fc, "out_features", 24)
-    class_names = [f"Class {i+1}" for i in range(num_classes)]
-
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
+
+    # Real chromosome labels
+    class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
+
     st.success(f"✅ Model loaded successfully from: {model_path}")
-    st.caption(f"Detected {num_classes} output classes.")
+    st.caption(f"Detected {len(class_names)} chromosome classes: 1–22, X, Y")
     return model, class_names
 
 # ----------------------------------------------------------
@@ -90,16 +76,16 @@ if uploaded:
             probs = torch.softmax(logits, dim=1).squeeze(0)
 
         conf, idx = torch.max(probs, dim=0)
+        idx = idx.item()
 
-        # Safety check for class index
-        pred_class = idx.item()
-        if pred_class >= len(class_names):
-            st.warning(f"⚠️ Predicted index {pred_class} out of range ({len(class_names)} classes detected).")
+        if idx < len(class_names):
+            pred_class = class_names[idx]
+            st.success(f"**Predicted class:** {pred_class} | Confidence: {conf:.4f}")
         else:
-            st.success(f"**Predicted class:** {class_names[pred_class]} | Confidence: {conf:.4f}")
+            st.warning(f"⚠️ Predicted index {idx} is out of range (model output mismatch).")
 
-        # Top-5 predictions table
-        topk = torch.topk(probs, k=min(5, len(class_names)))
+        # Top-5 predictions
+        topk = torch.topk(probs, k=5)
         st.subheader("Top-5 Predictions")
         st.table({
             "Class": [class_names[i] if i < len(class_names) else f"Unknown({i})" for i in topk.indices.tolist()],
@@ -107,5 +93,3 @@ if uploaded:
         })
 else:
     st.info("⬆️ Please upload a chromosome image to begin.")
-
-
