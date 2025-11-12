@@ -62,13 +62,13 @@ def load_model():
 
     class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
 
-    st.sidebar.success(f"✅ Model loaded successfully")
+    st.sidebar.success("✅ Model loaded successfully")
     st.sidebar.caption(f"Detected {len(class_names)} classes: 1–22, X, Y")
     return model, class_names
 
 
 # ----------------------------------------------------------
-# Image Quality / Domain Check (✅ Calibrated for BioImLAB)
+# Image Quality / Domain Check (✅ Fixed for BioImLAB)
 # ----------------------------------------------------------
 def check_image_quality(img, min_size=20, min_contrast=8):
     """Return warning string if image looks out-of-domain or poor quality."""
@@ -84,25 +84,26 @@ def check_image_quality(img, min_size=20, min_contrast=8):
 
 def compute_domain_score(img):
     """
-    Calibrated heuristic OOD score for BioImLAB-style crops.
+    Calibrated heuristic OOD score for BioImLAB-style chromosome crops.
     Returns 0..1 (higher = more in-domain).
     """
-    gray = np.array(img.convert("L"), dtype=np.uint8)
-    mu = float(gray.mean())          # background brightness
-    sigma = float(gray.std())        # contrast
-    fg_ratio = float((gray < 200).mean())  # dark-pixel ratio (chromosome area)
+    gray = np.array(img.convert("L"), dtype=np.float32)
+
+    # Basic statistics
+    mu = gray.mean()                # brightness
+    sigma = gray.std()              # contrast
+    fg_ratio = np.mean(gray < 180)  # chromosome pixel ratio
 
     def bell(x, c, w):
-        """Gaussian-like bell; 1 near c, decays with width w."""
-        return np.exp(-((x - c) / w) ** 2)
+        return np.exp(-0.5 * ((x - c) / w) ** 2)
 
-    # Tuned for bright backgrounds and typical chromosome regions
-    s_mu    = bell(mu, c=200, w=60)
-    s_sigma = bell(sigma, c=80, w=40)
-    s_fg    = bell(fg_ratio, c=0.10, w=0.08)
+    # Tuned centers for BioImLAB brightness/contrast distribution
+    s_mu    = bell(mu, c=170, w=50)     # mean brightness ~170 (light background)
+    s_sigma = bell(sigma, c=45,  w=25)  # contrast ~40–60
+    s_fg    = bell(fg_ratio, c=0.12, w=0.10)  # typical dark area fraction
 
     score = (s_mu * s_sigma * s_fg) ** (1/3)
-    return float(max(0.0, min(1.0, score)))
+    return float(np.clip(score, 0.0, 1.0))
 
 
 # ----------------------------------------------------------
@@ -124,7 +125,6 @@ transform = T.Compose([
 # File or Folder Upload
 # ----------------------------------------------------------
 with tab1:
-    
     uploaded_items = st.file_uploader(
         "📁 Upload images (PNG/JPG/BMP/TIFF) or a folder as .zip",
         type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
@@ -132,8 +132,7 @@ with tab1:
     )
 
     if uploaded_items:
-        results = []
-        image_files = []
+        results, image_files = [], []
         temp_dir = tempfile.mkdtemp()
 
         for item in uploaded_items:
@@ -155,7 +154,6 @@ with tab1:
         st.info(f"🔬 Processing {len(image_files)} image(s)...")
         progress = st.progress(0)
 
-        # Counters for in-domain / out-of-domain
         in_domain, out_domain = 0, 0
         st.session_state["ood_alerts"] = []
 
@@ -168,7 +166,6 @@ with tab1:
                     img = Image.open(img_item).convert("RGB")
                     name = img_item.name
 
-                # --- Quality & domain score ---
                 quality_warning = check_image_quality(img)
                 domain_score = compute_domain_score(img)
 
@@ -179,12 +176,11 @@ with tab1:
 
                 conf, idx = torch.max(probs, dim=0)
                 pred_label = class_names[idx.item()]
-
                 conf_val = float(conf)
-                is_low_conf = conf_val < 0.7
-                is_low_domain = domain_score < 0.15  # ✅ Calibrated threshold
 
-                # 🔸 Collect warning messages per image
+                is_low_conf = conf_val < 0.7
+                is_low_domain = domain_score < 0.15
+
                 warnings_list = []
                 if quality_warning:
                     warnings_list.append(quality_warning)
@@ -216,12 +212,10 @@ with tab1:
 
             except Exception as e:
                 st.error(f"❌ Error processing {name}: {e}")
-
             progress.progress((idx_img + 1) / len(image_files))
 
         progress.empty()
 
-        # 🔹 Show grouped OOD warnings once
         if st.session_state["ood_alerts"]:
             st.warning("⚠️ **Overconfident OOD Predictions:**\n" + "\n".join(st.session_state["ood_alerts"]))
             st.session_state["ood_alerts"].clear()
@@ -262,7 +256,7 @@ with tab1:
             col2.metric("⚠️ Possibly Out-of-domain", out_domain)
 
             # ------------------------------------------------------
-            # Show image previews in a grid
+            # Image previews
             # ------------------------------------------------------
             st.subheader("🖼️ Image Previews")
             cols = st.columns(3)
