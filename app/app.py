@@ -78,7 +78,7 @@ transform = T.Compose([
                 [0.229, 0.224, 0.225]),
 ])
 
-uploaded = st.file_uploader("📤 Upload a chromosome image (PNG/JPG)", type=["png", "jpg", "jpeg"])
+uploaded = st.file_uploader("📤 Upload a chromosome image (PNG/JPG/BMP)", type=["png", "jpg", "jpeg", "bmp"])
 
 if uploaded:
     img = Image.open(uploaded).convert("RGB")
