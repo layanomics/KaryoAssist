@@ -210,7 +210,7 @@ with tab1:
                     "Low Confidence": is_low_conf,
                     "Low Domain Score": is_low_domain
                 })
-                    st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
+                st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
 
 
             except Exception as e:
