@@ -38,7 +38,10 @@ tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Mode
 
 with tab1:
     st.title("🧬 KaryoAssist")
-    st.markdown("Upload **images or an entire folder (.zip)** of chromosome samples to predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset).")
+    st.markdown(
+        "Upload **images or an entire folder (.zip)** of chromosome samples to "
+        "predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset)."
+    )
 
 # ----------------------------------------------------------
 # Load Model (24 chromosome classes)
@@ -90,25 +93,31 @@ def check_image_quality(img, min_size=20, min_contrast=8):
 
 def compute_domain_score(img):
     """
-    Robust domain score for BioImLAB-style binary chromosome crops.
-    Returns (score, mu, sigma, dark_ratio) where higher score = more in-domain.
+    Domain score calibrated from REAL BioImLAB stats.
+
+    Based on your dataset profile:
+    - mean_intensity (μ):  ~17.4 (5–95% ≈ 1.1–36.0)
+    - std_intensity  (σ):  ~33.1 (5–95% ≈ 9.1–56.8)
+    - dark_ratio          ≈ 0.99 (5% ≈ 0.923, most values ~1.0)
+
+    Returns: (score, mu, sigma, dark_ratio), where score ∈ [0, 1]
+             higher score → more in-domain.
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
-    mu = gray.mean()                  # background brightness
-    sigma = gray.std()                # contrast
-    dark_ratio = np.mean(gray < 150)  # dark (chromosome) pixel fraction
+    mu = gray.mean()
+    sigma = gray.std()
+    dark_ratio = np.mean(gray < 128)
 
-    # Expected BioImLAB characteristics:
-    # bright background (mu ~ 240–255), moderate contrast (sigma ~ 15–35),
-    # small dark fraction (dark_ratio ~ 0.01–0.08)
+    # Gaussian-like similarity around dataset centers
     def bell(x, c, w):
-        return np.exp(-((x - c) / w) ** 2)
+        return np.exp(-0.5 * ((x - c) / w) ** 2)
 
-    s_mu   = bell(mu,        c=245, w=20)
-    s_sig  = bell(sigma,     c=25,  w=10)
-    s_dark = bell(dark_ratio, c=0.04, w=0.03)
+    # Centers from dataset summary / percentiles
+    s_mu = bell(mu, c=17.4, w=15.0)          # brightness
+    s_sig = bell(sigma, c=33.1, w=20.0)      # contrast
+    s_dark = bell(dark_ratio, c=0.9869, w=0.06)  # dark pixel fraction
 
-    score = (s_mu * s_sig * s_dark) ** (1/3)
+    score = (s_mu * s_sig * s_dark) ** (1 / 3.0)
     return float(np.clip(score, 0.0, 1.0)), float(mu), float(sigma), float(dark_ratio)
 
 
@@ -185,19 +194,19 @@ with tab1:
                 conf_val = float(conf)
 
                 is_low_conf = conf_val < 0.7
-                is_low_domain = domain_score < domain_threshold  # ✅ single threshold
+                is_low_domain = domain_score < domain_threshold  # ✅ single source of truth
 
                 warnings_list = []
                 if quality_warning:
                     warnings_list.append(quality_warning)
-                if conf_val > 0.8 and domain_score < max(0.10, 0.5*domain_threshold):
+                if conf_val > 0.8 and domain_score < max(0.10, 0.5 * domain_threshold):
                     warnings_list.append(
                         f"High confidence ({conf_val:.2f}) but very low domain score ({domain_score:.2f}) – likely OOD."
                     )
 
                 combined_warning = " | ".join(warnings_list) if warnings_list else ""
 
-                # ✅ counters use the same logic as the table flag
+                # ✅ Counters use the same logic as the table flag
                 if is_low_conf or is_low_domain or quality_warning:
                     out_domain += 1
                 else:
@@ -214,8 +223,10 @@ with tab1:
                     "Low Domain Score": is_low_domain
                 })
 
-                # Optional debug caption (helpful during testing)
-                st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
+                # Debug caption to inspect stats vs score
+                st.caption(
+                    f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}"
+                )
 
             except Exception as e:
                 st.error(f"❌ Error processing {name}: {e}")
@@ -223,9 +234,13 @@ with tab1:
 
         progress.empty()
 
-        if st.session_state["ood_alerts"]:
-            st.warning("⚠️ **Overconfident OOD Predictions:**\n" + "\n".join(st.session_state["ood_alerts"]))
-            st.session_state["ood_alerts"].clear()
+        if st.session_state.get("ood_alerts"):
+            if st.session_state["ood_alerts"]:
+                st.warning(
+                    "⚠️ **Overconfident OOD Predictions:**\n" +
+                    "\n".join(st.session_state["ood_alerts"])
+                )
+                st.session_state["ood_alerts"].clear()
 
         # ------------------------------------------------------
         # Display results table
@@ -239,14 +254,17 @@ with tab1:
                 "Warning": r["Warning"]
             } for r in results])
 
-            # ✅ table flag uses the same domain_threshold
+            # ✅ Table flag uses the same domain_threshold
             df["Domain Flag"] = df["Domain Score"].apply(
                 lambda x: "⚠️ Out-of-domain" if x < domain_threshold else "✅ In-domain"
             )
 
             st.subheader("📊 Prediction Results")
-            styled_df = df.style.background_gradient(subset=["Confidence"], cmap="Blues") \
-                                .background_gradient(subset=["Domain Score"], cmap="Oranges")
+            styled_df = (
+                df.style
+                .background_gradient(subset=["Confidence"], cmap="Blues")
+                .background_gradient(subset=["Domain Score"], cmap="Oranges")
+            )
             st.dataframe(styled_df, use_container_width=True)
 
             csv = df.to_csv(index=False).encode("utf-8")
@@ -312,7 +330,9 @@ with tab1:
                 st.write(f"**Total Images:** {len(df)}")
                 st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
                 st.write(f"**Average Domain Score:** {df['Domain Score'].mean():.4f}")
-                st.write(f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)")
+                st.write(
+                    f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)"
+                )
 
 with tab3:
     st.header("ℹ️ About the Model")
