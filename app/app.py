@@ -10,48 +10,36 @@ import zipfile
 import io
 import tempfile
 import matplotlib.pyplot as plt
-import numpy as np  # 👈 for quality checks
+import numpy as np
+
 
 # ----------------------------------------------------------
-# Streamlit Page Config
+# Streamlit Config
 # ----------------------------------------------------------
 st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="wide")
 
-# Sidebar Info
 st.sidebar.title("⚙️ Settings & Info")
 st.sidebar.markdown("""
-**KaryoAssist** — an AI-powered assistant for automated chromosome classification.  
-Upload single images, multiple images, or a `.zip` folder for batch prediction.
+**KaryoAssist** — Automated chromosome classification + domain detection  
+Model: Fine-tuned **ResNet50** on **BioImLAB**.
 """)
-st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes: 1–22, X, Y).")
 
-# 🔧 Domain sensitivity (single source of truth)
-domain_threshold = st.sidebar.slider(
-    "Domain threshold (higher = stricter OOD)",
-    min_value=0.00, max_value=1.00, value=0.30, step=0.01
-)
 
 # ----------------------------------------------------------
-# Tabs Layout
+# FIXED DOMAIN THRESHOLD (derived from dataset percentiles)
 # ----------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Model"])
+DOMAIN_THRESHOLD = 0.25   # images scoring <0.25 → OOD
 
-with tab1:
-    st.title("🧬 KaryoAssist")
-    st.markdown(
-        "Upload **images or an entire folder (.zip)** of chromosome samples to "
-        "predict their classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset)."
-    )
 
 # ----------------------------------------------------------
-# Load Model (24 chromosome classes)
+# Load Model
 # ----------------------------------------------------------
 @st.cache_resource
 def load_model():
     model_path = "app/models/best_resnet50_finetuned.ckpt"
 
     if not os.path.exists(model_path):
-        st.error(f"❌ Model file not found at: {model_path}")
+        st.error("❌ Model file not found!")
         st.stop()
 
     ckpt = torch.load(model_path, map_location="cpu")
@@ -71,290 +59,168 @@ def load_model():
 
     class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
 
-    st.sidebar.success("✅ Model loaded successfully")
-    st.sidebar.caption(f"Detected {len(class_names)} classes: 1–22, X, Y")
+    st.sidebar.success("Model loaded.")
     return model, class_names
 
 
-# ----------------------------------------------------------
-# Image Quality / Domain Check
-# ----------------------------------------------------------
-def check_image_quality(img, min_size=20, min_contrast=8):
-    """Return warning string if image looks out-of-domain or poor quality."""
-    w, h = img.size
-    if w < min_size or h < min_size:
-        return "Image too small (likely not a chromosome crop)."
-    gray = np.array(img.convert("L"))
-    contrast = gray.std()
-    if contrast < min_contrast:
-        return f"Low contrast (σ={contrast:.1f}) – may be out of domain."
-    return None
+model, class_names = load_model()
 
 
+# ----------------------------------------------------------
+# Domain Scoring (corrected using REAL dataset stats)
+# ----------------------------------------------------------
 def compute_domain_score(img):
     """
-    Domain score calibrated from REAL BioImLAB stats.
+    Correct domain score based on actual BioImLAB stats:
 
-    Based on your dataset profile:
-    - mean_intensity (μ):  ~17.4 (5–95% ≈ 1.1–36.0)
-    - std_intensity  (σ):  ~33.1 (5–95% ≈ 9.1–56.8)
-    - dark_ratio          ≈ 0.99 (5% ≈ 0.923, most values ~1.0)
-
-    Returns: (score, mu, sigma, dark_ratio), where score ∈ [0, 1]
-             higher score → more in-domain.
+    μ_mean = 17, σ_mean = 33, dark_ratio = 0.986
     """
+
     gray = np.array(img.convert("L"), dtype=np.float32)
     mu = gray.mean()
     sigma = gray.std()
-    dark_ratio = np.mean(gray < 128)
+    dark_ratio = np.mean(gray < 150)
 
-    # Gaussian-like similarity around dataset centers
+    # Gaussian similarity functions
     def bell(x, c, w):
-        return np.exp(-0.5 * ((x - c) / w) ** 2)
+        return np.exp(-((x - c) / w) ** 2)
 
-    # Centers from dataset summary / percentiles
-    s_mu = bell(mu, c=17.4, w=15.0)          # brightness
-    s_sig = bell(sigma, c=33.1, w=20.0)      # contrast
-    s_dark = bell(dark_ratio, c=0.9869, w=0.06)  # dark pixel fraction
+    # centers = dataset means, widths = dataset stds
+    s_mu   = bell(mu,        c=17.4,  w=11.0)
+    s_sig  = bell(sigma,     c=33.1,  w=14.6)
+    s_dark = bell(dark_ratio, c=0.986, w=0.03)
 
-    score = (s_mu * s_sig * s_dark) ** (1 / 3.0)
-    return float(np.clip(score, 0.0, 1.0)), float(mu), float(sigma), float(dark_ratio)
+    score = (s_mu * s_sig * s_dark) ** (1/3)
+    return float(score), float(mu), float(sigma), float(dark_ratio)
 
 
-# ----------------------------------------------------------
-# Initialize model once
-# ----------------------------------------------------------
-model, class_names = load_model()
+# Image quality check
+def check_image_quality(img):
+    w, h = img.size
+    if w < 20 or h < 20:
+        return "Image too small."
+    return None
 
-# ----------------------------------------------------------
-# Image Preprocessing
-# ----------------------------------------------------------
+
+# Preprocessing
 transform = T.Compose([
     T.Resize((224, 224)),
     T.ToTensor(),
-    T.Normalize([0.485, 0.456, 0.406],
-                [0.229, 0.224, 0.225]),
+    T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
+
 # ----------------------------------------------------------
-# File or Folder Upload
+# UI Tabs
+# ----------------------------------------------------------
+tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About"])
+
+
+# ----------------------------------------------------------
+# Prediction Tab
 # ----------------------------------------------------------
 with tab1:
-    uploaded_items = st.file_uploader(
-        "📁 Upload images (PNG/JPG/BMP/TIFF) or a folder as .zip",
+
+    st.title("🧬 KaryoAssist – Predictions")
+
+    uploaded = st.file_uploader(
+        "Upload chromosome images or a .zip folder",
         type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
         accept_multiple_files=True
     )
 
-    if uploaded_items:
-        results, image_files = [], []
-        temp_dir = tempfile.mkdtemp()
+    if uploaded:
+        results = []
+        all_files = []
+        tmp = tempfile.mkdtemp()
 
-        for item in uploaded_items:
+        for item in uploaded:
             if item.name.lower().endswith(".zip"):
-                st.info(f"📦 Extracting ZIP folder: {item.name}")
-                with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
-                    zf.extractall(temp_dir)
-                for root, _, files in os.walk(temp_dir):
+                with zipfile.ZipFile(io.BytesIO(item.read()), "r") as z:
+                    z.extractall(tmp)
+                for r, _, files in os.walk(tmp):
                     for f in files:
-                        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
-                            image_files.append(os.path.join(root, f))
+                        if f.lower().endswith(("png", "jpg", "jpeg", "bmp", "tif", "tiff")):
+                            all_files.append(os.path.join(r, f))
             else:
-                image_files.append(item)
+                all_files.append(item)
 
-        if not image_files:
-            st.warning("⚠️ No valid image files found. Please upload PNG, JPG, or BMP images.")
-            st.stop()
+        st.info(f"Processing {len(all_files)} image(s)...")
 
-        st.info(f"🔬 Processing {len(image_files)} image(s)...")
-        progress = st.progress(0)
+        in_domain_count = 0
+        out_domain_count = 0
 
-        in_domain, out_domain = 0, 0
-        st.session_state["ood_alerts"] = []
+        for item in all_files:
 
-        for idx_img, img_item in enumerate(image_files):
-            try:
-                if isinstance(img_item, str):
-                    img = Image.open(img_item).convert("RGB")
-                    name = os.path.basename(img_item)
-                else:
-                    img = Image.open(img_item).convert("RGB")
-                    name = img_item.name
+            if isinstance(item, str):
+                img = Image.open(item).convert("RGB")
+                name = os.path.basename(item)
+            else:
+                img = Image.open(item).convert("RGB")
+                name = item.name
 
-                quality_warning = check_image_quality(img)
-                domain_score, mu, sigma, dark_ratio = compute_domain_score(img)
+            qwarn = check_image_quality(img)
+            domain_score, mu, sigma, dark = compute_domain_score(img)
 
-                x = transform(img).unsqueeze(0)
-                with torch.inference_mode():
-                    logits = model(x)
-                    probs = torch.softmax(logits, dim=1).squeeze(0)
+            x = transform(img).unsqueeze(0)
+            with torch.inference_mode():
+                logits = model(x)
+                probs = torch.softmax(logits, 1)[0]
 
-                conf, idx = torch.max(probs, dim=0)
-                pred_label = class_names[idx.item()]
-                conf_val = float(conf)
+            conf, idx = probs.max(0)
+            conf = float(conf)
+            pred = class_names[idx.item()]
 
-                is_low_conf = conf_val < 0.7
-                is_low_domain = domain_score < domain_threshold  # ✅ single source of truth
+            is_in_domain = (domain_score >= DOMAIN_THRESHOLD)
 
-                warnings_list = []
-                if quality_warning:
-                    warnings_list.append(quality_warning)
-                if conf_val > 0.8 and domain_score < max(0.10, 0.5 * domain_threshold):
-                    warnings_list.append(
-                        f"High confidence ({conf_val:.2f}) but very low domain score ({domain_score:.2f}) – likely OOD."
-                    )
+            # counters
+            if is_in_domain and not qwarn:
+                in_domain_count += 1
+            else:
+                out_domain_count += 1
 
-                combined_warning = " | ".join(warnings_list) if warnings_list else ""
+            results.append({
+                "Image": name,
+                "Predicted Class": pred,
+                "Confidence": round(conf, 4),
+                "Domain Score": round(domain_score, 3),
+                "Warning": qwarn if qwarn else ""
+            })
 
-                # ✅ Counters use the same logic as the table flag
-                if is_low_conf or is_low_domain or quality_warning:
-                    out_domain += 1
-                else:
-                    in_domain += 1
+            st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark:.3f}, score={domain_score:.3f}")
 
-                results.append({
-                    "Image": name,
-                    "Predicted Class": pred_label,
-                    "Confidence": round(conf_val, 4),
-                    "Domain Score": round(domain_score, 3),
-                    "Preview": img,
-                    "Warning": combined_warning,
-                    "Low Confidence": is_low_conf,
-                    "Low Domain Score": is_low_domain
-                })
+        # Show table
+        df = pd.DataFrame(results)
+        df["Domain Flag"] = df["Domain Score"].apply(
+            lambda s: "⚠️ Out-of-domain" if s < DOMAIN_THRESHOLD else "✅ In-domain"
+        )
 
-                # Debug caption to inspect stats vs score
-                st.caption(
-                    f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}"
-                )
+        st.subheader("📊 Prediction Results")
+        st.dataframe(df, use_container_width=True)
 
-            except Exception as e:
-                st.error(f"❌ Error processing {name}: {e}")
-            progress.progress((idx_img + 1) / len(image_files))
+        # Counters
+        st.markdown("### 🧠 Domain Check Summary")
+        col1, col2 = st.columns(2)
+        col1.metric("Likely In-domain", in_domain_count)
+        col2.metric("Possibly Out-of-domain", out_domain_count)
 
-        progress.empty()
 
-        if st.session_state.get("ood_alerts"):
-            if st.session_state["ood_alerts"]:
-                st.warning(
-                    "⚠️ **Overconfident OOD Predictions:**\n" +
-                    "\n".join(st.session_state["ood_alerts"])
-                )
-                st.session_state["ood_alerts"].clear()
+# ----------------------------------------------------------
+# Analytics Tab
+# ----------------------------------------------------------
+with tab2:
+    st.header("📈 Analytics")
+    st.write("Upload images to view analytics.")
 
-        # ------------------------------------------------------
-        # Display results table
-        # ------------------------------------------------------
-        if results:
-            df = pd.DataFrame([{
-                "Image": r["Image"],
-                "Predicted Class": r["Predicted Class"],
-                "Confidence": r["Confidence"],
-                "Domain Score": r["Domain Score"],
-                "Warning": r["Warning"]
-            } for r in results])
 
-            # ✅ Table flag uses the same domain_threshold
-            df["Domain Flag"] = df["Domain Score"].apply(
-                lambda x: "⚠️ Out-of-domain" if x < domain_threshold else "✅ In-domain"
-            )
-
-            st.subheader("📊 Prediction Results")
-            styled_df = (
-                df.style
-                .background_gradient(subset=["Confidence"], cmap="Blues")
-                .background_gradient(subset=["Domain Score"], cmap="Oranges")
-            )
-            st.dataframe(styled_df, use_container_width=True)
-
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv,
-                file_name="karyoassist_predictions.csv",
-                mime="text/csv"
-            )
-
-            st.markdown("---")
-            st.markdown("### 🧠 Domain Check Summary")
-            col1, col2 = st.columns(2)
-            col1.metric("✅ Likely In-domain", in_domain)
-            col2.metric("⚠️ Possibly Out-of-domain", out_domain)
-
-            # ------------------------------------------------------
-            # Image previews
-            # ------------------------------------------------------
-            st.subheader("🖼️ Image Previews")
-            cols = st.columns(3)
-            for i, r in enumerate(results):
-                with cols[i % 3]:
-                    caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
-                    if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
-                        caption += " ⚠️"
-                    st.image(r["Preview"], caption=caption, use_column_width=True)
-                    if r["Warning"]:
-                        st.warning(r["Warning"])
-                    if r["Low Confidence"] or r["Low Domain Score"]:
-                        st.warning(
-                            f"⚠️ Low confidence ({r['Confidence']:.2f}) or abnormal domain score "
-                            f"({r['Domain Score']:.2f}) – likely out-of-domain input."
-                        )
-
-            # ------------------------------------------------------
-            # Analytics Tab
-            # ------------------------------------------------------
-            with tab2:
-                st.header("📈 Dataset Analytics")
-
-                st.subheader("📊 Class Distribution")
-                counts = df["Predicted Class"].value_counts().sort_index()
-                st.bar_chart(counts)
-
-                st.subheader("📉 Confidence Histogram")
-                fig, ax = plt.subplots()
-                ax.hist(df["Confidence"], bins=10, color="skyblue", edgecolor="black")
-                ax.set_xlabel("Confidence")
-                ax.set_ylabel("Frequency")
-                ax.set_title("Confidence Score Distribution")
-                st.pyplot(fig)
-
-                st.subheader("🧠 Domain Score Histogram")
-                fig2, ax2 = plt.subplots()
-                ax2.hist(df["Domain Score"], bins=10, color="orange", edgecolor="black")
-                ax2.set_xlabel("Domain Score (higher = in-domain)")
-                ax2.set_ylabel("Frequency")
-                ax2.set_title("Domain Similarity Distribution")
-                st.pyplot(fig2)
-
-                st.subheader("📋 Summary")
-                st.write(f"**Total Images:** {len(df)}")
-                st.write(f"**Average Confidence:** {df['Confidence'].mean():.4f}")
-                st.write(f"**Average Domain Score:** {df['Domain Score'].mean():.4f}")
-                st.write(
-                    f"**Most Frequent Prediction:** {counts.idxmax()} ({counts.max()} images)"
-                )
-
+# ----------------------------------------------------------
+# About Tab
+# ----------------------------------------------------------
 with tab3:
-    st.header("ℹ️ About the Model")
+    st.header("ℹ️ About")
     st.markdown("""
-    **Model:** ResNet50 (fine-tuned)  
-    **Dataset:** BioImLAB Chromosome Dataset  
-    **Classes:** 1–22, X, Y (24 total)  
-    **Input Size:** 224 × 224 (RGB)  
-    **Training Details:**  
-    - Optimizer: Adam  
-    - Loss: CrossEntropy  
-    - Epochs: Variable (fine-tuned on curated data)  
-
-    **Developed by:** Layan Essam  
-    **Purpose:** Automated Karyotyping Assistant to aid cytogenetic analysis in research and diagnostic labs.
+    **Model:** ResNet50  
+    **Dataset:** BioImLAB  
+    **OOD Detection:** Based on real dataset statistics extracted from 5474 images.  
     """)
 
-    st.markdown("💡 Future Enhancements:")
-    st.markdown("""
-    - 🔥 Add Grad-CAM explainability (heatmaps)  
-    - 📦 Support larger model architectures (EfficientNet, ViT)  
-    - ☁️ Integrate HuggingFace or GDrive model hosting  
-    - 📄 Generate downloadable PDF reports  
-    - 🧠 Improve OOD detection using feature similarity (embedding space)
-    """)
