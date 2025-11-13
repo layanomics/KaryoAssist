@@ -10,7 +10,8 @@ import zipfile
 import io
 import tempfile
 import matplotlib.pyplot as plt
-import numpy as np  # 👈 for quality checks
+import numpy as np
+import json  # for per-class domain profiles
 
 # ----------------------------------------------------------
 # Streamlit Page Config
@@ -25,20 +26,33 @@ Upload single images, multiple images, or a `.zip` folder for batch prediction.
 """)
 st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes: 1–22, X, Y).")
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🧠 Domain heuristic")
-st.sidebar.markdown("""
-Domain score is a heuristic (0–1) calibrated from your **BioImLAB training crops**:
+# 🔧 Domain sensitivity (single source of truth)
+domain_threshold = st.sidebar.slider(
+    "Domain threshold (higher = stricter OOD)",
+    min_value=0.00, max_value=1.00, value=0.30, step=0.01
+)
 
-- Mean intensity ≈ **17.4 ± 11** (dark background)  
-- Pixel std ≈ **33.1 ± 14.6**  
-- Dark pixel ratio ≈ **0.99 ± 0.03**
+# ----------------------------------------------------------
+# Load per-class domain profiles (from training stats)
+# ----------------------------------------------------------
+DOMAIN_PROFILES = {}
+profile_paths = [
+    "app/models/domain_profiles.json",  # if you keep it under app/models
+    "domain_profiles.json",             # or next to app.py
+]
 
-Images with **domain score < 0.6** are treated as *out-of-domain*.
-""")
+for p in profile_paths:
+    if os.path.exists(p):
+        try:
+            with open(p, "r") as f:
+                DOMAIN_PROFILES = json.load(f)
+            st.sidebar.success(f"✅ Loaded per-class domain profiles from: {p}")
+            break
+        except Exception as e:
+            st.sidebar.warning(f"⚠️ Failed to load domain_profiles.json from {p}: {e}")
 
-# Single source of truth for the OOD decision
-DOMAIN_THRESHOLD = 0.60
+if not DOMAIN_PROFILES:
+    st.sidebar.warning("⚠️ domain_profiles.json not found – domain scores will fall back to global heuristics.")
 
 # ----------------------------------------------------------
 # Tabs Layout
@@ -48,9 +62,8 @@ tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Mode
 with tab1:
     st.title("🧬 KaryoAssist")
     st.markdown(
-        "Upload **images or an entire folder (.zip)** of chromosome samples to "
-        "predict their classes using your fine-tuned **ResNet50** model "
-        "(trained on BioImLAB cropped chromosome dataset)."
+        "Upload **images or an entire folder (.zip)** of chromosome samples to predict their "
+        "classes using your fine-tuned **ResNet50** model (trained on BioImLAB dataset)."
     )
 
 # ----------------------------------------------------------
@@ -89,54 +102,73 @@ def load_model():
 # ----------------------------------------------------------
 # Image Quality / Domain Check
 # ----------------------------------------------------------
-def check_image_quality(img, min_size=20, min_contrast=8):
-    """Quick sanity checks on image size & contrast."""
+def check_image_quality(img, min_size=20, min_contrast=5):
+    """Return warning string if image looks out-of-domain or poor quality."""
     w, h = img.size
     if w < min_size or h < min_size:
         return "Image too small (likely not a chromosome crop)."
-    gray = np.array(img.convert("L"), dtype=np.float32)
-    contrast = float(gray.std())
+    gray = np.array(img.convert("L"))
+    contrast = gray.std()
     if contrast < min_contrast:
         return f"Low contrast (σ={contrast:.1f}) – may be out of domain."
     return None
 
 
-def compute_domain_score(img):
+def _feature_score(val, p25, p50, p75):
     """
-    Domain score calibrated from BioImLAB cropped chromosomes.
+    Smooth score in [0,1] based on how close 'val' is to the class-specific distribution.
+    Uses p25/p50/p75 from the training stats.
+    """
+    width = max(p75 - p25, 1e-3)
+    return float(np.exp(-((val - p50) / (2 * width)) ** 2))
 
-    Training set stats (from true_training_stats.csv):
-      - Mean intensity μ: 17.39 ± 11.0
-      - Std intensity σ:  33.10 ± 14.63
-      - Dark pixel ratio d: 0.987 ± 0.028  (dark background, light chromosome)
 
-    We convert (μ, σ, d) into a 0–1 score using smooth Gaussian-like bells.
-    Higher score => more similar to training crops.
+def compute_domain_score(img, pred_label):
+    """
+    Per-class domain score based on true training stats.
+
+    - Uses per-class percentiles (p25/p50/p75) for:
+      * Mean gray intensity
+      * Std gray intensity
+      * Dark pixel ratio
+
+    Returns (score, mu, sigma, dark_ratio) where higher score = more in-domain.
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
-
     mu = float(gray.mean())
     sigma = float(gray.std())
-    dark_ratio = float((gray < 128).mean())
+    dark_ratio = float(np.mean(gray < 128))  # dark background → high dark_ratio
 
-    # Centers and widths directly from your dataset profile
-    MU_CENTER, MU_STD = 17.39, 11.00
-    SIGMA_CENTER, SIGMA_STD = 33.10, 14.63
-    DARK_CENTER, DARK_STD = 0.987, 0.028
+    profile_key = f"Class_{pred_label}"
+    profile = DOMAIN_PROFILES.get(profile_key)
 
-    def bell(x, c, s):
-        # s_mult*std gives a "soft" width. Using 2*std covers ~95% of the training set.
-        width = 2.0 * s
-        return np.exp(-((x - c) / width) ** 2)
+    # If we don't have a profile (or JSON missing), fall back to global heuristics
+    if not profile:
+        # Global stats you computed over all training crops
+        global_mu_mean, global_mu_std = 17.3889, 11.0052
+        global_sigma_mean, global_sigma_std = 33.1041, 14.6327
+        global_dark_mean, global_dark_std = 0.9869, 0.0284
 
-    s_mu = bell(mu, MU_CENTER, MU_STD)
-    s_sigma = bell(sigma, SIGMA_CENTER, SIGMA_STD)
-    s_dark = bell(dark_ratio, DARK_CENTER, DARK_STD)
+        def bell(x, c, s):
+            return np.exp(-((x - c) / (2 * s)) ** 2)
 
-    score = (s_mu * s_sigma * s_dark) ** (1.0 / 3.0)
-    score = float(np.clip(score, 0.0, 1.0))
+        s_mu = bell(mu, global_mu_mean, global_mu_std)
+        s_sigma = bell(sigma, global_sigma_mean, global_sigma_std)
+        s_dark = bell(dark_ratio, global_dark_mean, global_dark_std)
 
-    return score, mu, sigma, dark_ratio
+        score = (s_mu * s_sigma * s_dark) ** (1 / 3)
+        return float(np.clip(score, 0.0, 1.0)), mu, sigma, dark_ratio
+
+    mean_prof = profile["Mean"]
+    sigma_prof = profile["Sigma"]
+    dark_prof = profile["Dark"]
+
+    s_mu = _feature_score(mu, mean_prof["p25"], mean_prof["p50"], mean_prof["p75"])
+    s_sigma = _feature_score(sigma, sigma_prof["p25"], sigma_prof["p50"], sigma_prof["p75"])
+    s_dark = _feature_score(dark_ratio, dark_prof["p25"], dark_prof["p50"], dark_prof["p75"])
+
+    score = (s_mu * s_sigma * s_dark) ** (1 / 3)
+    return float(np.clip(score, 0.0, 1.0)), mu, sigma, dark_ratio
 
 
 # ----------------------------------------------------------
@@ -168,7 +200,6 @@ with tab1:
         results, image_files = [], []
         temp_dir = tempfile.mkdtemp()
 
-        # Flatten individual files + zip contents into image_files
         for item in uploaded_items:
             if item.name.lower().endswith(".zip"):
                 st.info(f"📦 Extracting ZIP folder: {item.name}")
@@ -199,11 +230,10 @@ with tab1:
                     img = Image.open(img_item).convert("RGB")
                     name = img_item.name
 
-                # Quality & domain score
+                # 1) Basic quality check (size, very low contrast)
                 quality_warning = check_image_quality(img)
-                domain_score, mu, sigma, dark_ratio = compute_domain_score(img)
 
-                # Model prediction
+                # 2) Model prediction
                 x = transform(img).unsqueeze(0)
                 with torch.inference_mode():
                     logits = model(x)
@@ -213,24 +243,24 @@ with tab1:
                 pred_label = class_names[idx.item()]
                 conf_val = float(conf)
 
-                # OOD decision is PURELY based on domain_score vs DOMAIN_THRESHOLD
-                is_ood = domain_score < DOMAIN_THRESHOLD
+                # 3) Domain score using *predicted* class statistics
+                domain_score, mu, sigma, dark_ratio = compute_domain_score(img, pred_label)
+
+                is_low_conf = conf_val < 0.7
+                is_low_domain = domain_score < domain_threshold  # ✅ single threshold
 
                 warnings_list = []
                 if quality_warning:
                     warnings_list.append(quality_warning)
-                if conf_val > 0.8 and is_ood:
+                if conf_val > 0.8 and is_low_domain:
                     warnings_list.append(
                         f"High confidence ({conf_val:.2f}) but low domain score ({domain_score:.2f}) – likely OOD."
-                    )
-                elif is_ood:
-                    warnings_list.append(
-                        f"Low domain score ({domain_score:.2f}) – likely out-of-domain."
                     )
 
                 combined_warning = " | ".join(warnings_list) if warnings_list else ""
 
-                if is_ood:
+                # ✅ counters use the same logic as the table flag
+                if is_low_conf or is_low_domain or quality_warning:
                     out_domain += 1
                 else:
                     in_domain += 1
@@ -242,15 +272,21 @@ with tab1:
                     "Domain Score": round(domain_score, 3),
                     "Preview": img,
                     "Warning": combined_warning,
-                    "Is OOD": is_ood,
+                    "Low Confidence": is_low_conf,
+                    "Low Domain Score": is_low_domain,
+                    "Mean": round(mu, 2),
+                    "Std": round(sigma, 2),
+                    "DarkRatio": round(dark_ratio, 4),
                 })
 
-                # (Optional) uncomment for debugging per-image stats
-                # st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
+                # Optional debug caption (you can remove later)
+                st.caption(
+                    f"{name} | class={pred_label} | μ={mu:.1f}, σ={sigma:.1f}, "
+                    f"dark={dark_ratio:.4f}, score={domain_score:.3f}"
+                )
 
             except Exception as e:
                 st.error(f"❌ Error processing {name}: {e}")
-
             progress.progress((idx_img + 1) / len(image_files))
 
         progress.empty()
@@ -264,24 +300,23 @@ with tab1:
                 "Predicted Class": r["Predicted Class"],
                 "Confidence": r["Confidence"],
                 "Domain Score": r["Domain Score"],
+                "Mean": r["Mean"],
+                "Std": r["Std"],
+                "DarkRatio": r["DarkRatio"],
                 "Warning": r["Warning"],
-                "Is OOD": r["Is OOD"],
             } for r in results])
 
-            # ✅ Domain Flag uses the SAME logic as the counters (Is OOD)
-            df["Domain Flag"] = df["Is OOD"].map(
-                lambda ood: "⚠️ Out-of-domain" if ood else "✅ In-domain"
+            # ✅ Domain flag uses the same domain_threshold and logic as counters
+            df["Domain Flag"] = df["Domain Score"].apply(
+                lambda x: "⚠️ Out-of-domain" if x < domain_threshold else "✅ In-domain"
             )
 
             st.subheader("📊 Prediction Results")
-            styled_df = df.drop(columns=["Is OOD"]).style.background_gradient(
-                subset=["Confidence"], cmap="Blues"
-            ).background_gradient(
-                subset=["Domain Score"], cmap="Oranges"
-            )
+            styled_df = df.style.background_gradient(subset=["Confidence"], cmap="Blues") \
+                                 .background_gradient(subset=["Domain Score"], cmap="Oranges")
             st.dataframe(styled_df, use_container_width=True)
 
-            csv = df.drop(columns=["Is OOD"]).to_csv(index=False).encode("utf-8")
+            csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Download Results as CSV",
                 data=csv,
@@ -292,8 +327,8 @@ with tab1:
             st.markdown("---")
             st.markdown("### 🧠 Domain Check Summary")
             col1, col2 = st.columns(2)
-            col1.metric("✅ Likely In-domain", int(in_domain))
-            col2.metric("⚠️ Possibly Out-of-domain", int(out_domain))
+            col1.metric("✅ Likely In-domain", in_domain)
+            col2.metric("⚠️ Possibly Out-of-domain", out_domain)
 
             # ------------------------------------------------------
             # Image previews
@@ -303,11 +338,16 @@ with tab1:
             for i, r in enumerate(results):
                 with cols[i % 3]:
                     caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
-                    if r["Is OOD"]:
+                    if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
                         caption += " ⚠️"
                     st.image(r["Preview"], caption=caption, use_column_width=True)
                     if r["Warning"]:
                         st.warning(r["Warning"])
+                    if r["Low Confidence"] or r["Low Domain Score"]:
+                        st.warning(
+                            f"⚠️ Low confidence ({r['Confidence']:.2f}) or low domain score "
+                            f"({r['Domain Score']:.2f}) – possibly out-of-domain input."
+                        )
 
             # ------------------------------------------------------
             # Analytics Tab
@@ -321,7 +361,7 @@ with tab1:
 
                 st.subheader("📉 Confidence Histogram")
                 fig, ax = plt.subplots()
-                ax.hist(df["Confidence"], bins=10, edgecolor="black")
+                ax.hist(df["Confidence"], bins=10)
                 ax.set_xlabel("Confidence")
                 ax.set_ylabel("Frequency")
                 ax.set_title("Confidence Score Distribution")
@@ -329,7 +369,7 @@ with tab1:
 
                 st.subheader("🧠 Domain Score Histogram")
                 fig2, ax2 = plt.subplots()
-                ax2.hist(df["Domain Score"], bins=10, edgecolor="black")
+                ax2.hist(df["Domain Score"], bins=10)
                 ax2.set_xlabel("Domain Score (higher = in-domain)")
                 ax2.set_ylabel("Frequency")
                 ax2.set_title("Domain Similarity Distribution")
@@ -345,7 +385,7 @@ with tab3:
     st.header("ℹ️ About the Model")
     st.markdown("""
     **Model:** ResNet50 (fine-tuned)  
-    **Dataset:** BioImLAB Chromosome Dataset (single-chromosome dark-background crops)  
+    **Dataset:** BioImLAB Chromosome Dataset  
     **Classes:** 1–22, X, Y (24 total)  
     **Input Size:** 224 × 224 (RGB)  
     **Training Details:**  
