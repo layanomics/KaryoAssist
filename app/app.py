@@ -25,6 +25,12 @@ Upload single images, multiple images, or a `.zip` folder for batch prediction.
 """)
 st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes: 1–22, X, Y).")
 
+# 🔧 Domain sensitivity (single source of truth)
+domain_threshold = st.sidebar.slider(
+    "Domain threshold (higher = stricter OOD)",
+    min_value=0.00, max_value=1.00, value=0.30, step=0.01
+)
+
 # ----------------------------------------------------------
 # Tabs Layout
 # ----------------------------------------------------------
@@ -68,7 +74,7 @@ def load_model():
 
 
 # ----------------------------------------------------------
-# Image Quality / Domain Check (✅ Fixed for BioImLAB)
+# Image Quality / Domain Check
 # ----------------------------------------------------------
 def check_image_quality(img, min_size=20, min_contrast=8):
     """Return warning string if image looks out-of-domain or poor quality."""
@@ -84,27 +90,27 @@ def check_image_quality(img, min_size=20, min_contrast=8):
 
 def compute_domain_score(img):
     """
-    Adaptive domain score calibrated for binary BioImLAB chromosome BMPs.
-    Works with extremely bright, low-contrast, sparse-black images.
-    Returns (score, mu, sigma, dark_ratio) where score is 0..1 (higher = more in-domain).
+    Robust domain score for BioImLAB-style binary chromosome crops.
+    Returns (score, mu, sigma, dark_ratio) where higher score = more in-domain.
     """
     gray = np.array(img.convert("L"), dtype=np.float32)
-    mu = gray.mean()
-    sigma = gray.std()
-    dark_ratio = np.mean(gray < 150)
+    mu = gray.mean()                  # background brightness
+    sigma = gray.std()                # contrast
+    dark_ratio = np.mean(gray < 150)  # dark (chromosome) pixel fraction
 
-    # --- Normalize stats dynamically (fit to BioImLAB ranges)
-    # mean: 230–255 (white background)
-    mu_score = np.clip((mu - 220) / (255 - 220), 0, 1)
-    # contrast: 5–40
-    sigma_score = np.clip((sigma - 5) / (40 - 5), 0, 1)
-    # dark pixel ratio: 0.002–0.06 (chromosome area)
-    dark_score = np.clip((dark_ratio - 0.002) / (0.06 - 0.002), 0, 1)
+    # Expected BioImLAB characteristics:
+    # bright background (mu ~ 240–255), moderate contrast (sigma ~ 15–35),
+    # small dark fraction (dark_ratio ~ 0.01–0.08)
+    def bell(x, c, w):
+        return np.exp(-((x - c) / w) ** 2)
 
-    # --- Combine with adaptive weights
-    score = (0.4 * mu_score + 0.3 * sigma_score + 0.3 * dark_score)
-    score = float(np.clip(score, 0.0, 1.0))
-    return score, float(mu), float(sigma), float(dark_ratio)
+    s_mu   = bell(mu,        c=245, w=20)
+    s_sig  = bell(sigma,     c=25,  w=10)
+    s_dark = bell(dark_ratio, c=0.04, w=0.03)
+
+    score = (s_mu * s_sig * s_dark) ** (1/3)
+    return float(np.clip(score, 0.0, 1.0)), float(mu), float(sigma), float(dark_ratio)
+
 
 # ----------------------------------------------------------
 # Initialize model once
@@ -179,21 +185,19 @@ with tab1:
                 conf_val = float(conf)
 
                 is_low_conf = conf_val < 0.7
-                is_low_domain = domain_score < 0.15
+                is_low_domain = domain_score < domain_threshold  # ✅ single threshold
 
                 warnings_list = []
                 if quality_warning:
                     warnings_list.append(quality_warning)
-                if conf_val > 0.8 and domain_score < 0.10:
-                    warning_text = (
-                        f"High confidence ({conf_val:.2f}) but very low domain score "
-                        f"({domain_score:.2f}) – likely overconfident on out-of-domain data."
+                if conf_val > 0.8 and domain_score < max(0.10, 0.5*domain_threshold):
+                    warnings_list.append(
+                        f"High confidence ({conf_val:.2f}) but very low domain score ({domain_score:.2f}) – likely OOD."
                     )
-                    st.session_state["ood_alerts"].append(f"{name}: {warning_text}")
-                    warnings_list.append(warning_text)
 
                 combined_warning = " | ".join(warnings_list) if warnings_list else ""
 
+                # ✅ counters use the same logic as the table flag
                 if is_low_conf or is_low_domain or quality_warning:
                     out_domain += 1
                 else:
@@ -209,7 +213,8 @@ with tab1:
                     "Low Confidence": is_low_conf,
                     "Low Domain Score": is_low_domain
                 })
-                # Debug caption now has access to the variables:
+
+                # Optional debug caption (helpful during testing)
                 st.caption(f"{name}: μ={mu:.1f}, σ={sigma:.1f}, dark={dark_ratio:.4f}, score={domain_score:.3f}")
 
             except Exception as e:
@@ -234,8 +239,9 @@ with tab1:
                 "Warning": r["Warning"]
             } for r in results])
 
+            # ✅ table flag uses the same domain_threshold
             df["Domain Flag"] = df["Domain Score"].apply(
-                lambda x: "⚠️ Out-of-domain" if x < 0.3 else "✅ In-domain"
+                lambda x: "⚠️ Out-of-domain" if x < domain_threshold else "✅ In-domain"
             )
 
             st.subheader("📊 Prediction Results")
