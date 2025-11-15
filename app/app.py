@@ -66,13 +66,13 @@ with tab1:
     st.title("🧬 KaryoAssist")
     st.markdown("Upload images or a `.zip` folder to classify chromosomes.")
 
-    # ---------------------- CLEAR BUTTON FIX ----------------------
+    # ---------------------- CLEAR BUTTON ----------------------
     if st.button("🧹 Clear Previous Analysis"):
         st.session_state.clear()
         new_key = f"uploader_{np.random.randint(1, 1_000_000)}"
         st.session_state["uploader_key"] = new_key
         st.rerun()
-    # --------------------------------------------------------------
+    # ----------------------------------------------------------
 
 # ----------------------------------------------------------
 # Load Model
@@ -191,6 +191,9 @@ with tab1:
         image_files = []
         temp_dir = tempfile.mkdtemp()
 
+        # ---------- De-duplicate images within this run ----------
+        seen_keys = set()
+
         for item in uploaded_items:
             if item.name.lower().endswith(".zip"):
                 with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
@@ -198,9 +201,21 @@ with tab1:
                 for root, _, files in os.walk(temp_dir):
                     for f in files:
                         if f.lower().endswith(("png", "jpg", "jpeg", "bmp", "tif", "tiff")):
-                            image_files.append(os.path.join(root, f))
+                            full_path = os.path.join(root, f)
+                            # Use relative path inside temp_dir as a stable key
+                            rel_key = os.path.relpath(full_path, temp_dir)
+                            if rel_key in seen_keys:
+                                continue
+                            seen_keys.add(rel_key)
+                            image_files.append(full_path)
             else:
+                # Directly uploaded images: use filename as key
+                key = item.name
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
                 image_files.append(item)
+        # ---------------------------------------------------------
 
         st.info(f"Processing {len(image_files)} image(s)...")
         progress = st.progress(0)
@@ -316,7 +331,7 @@ with tab1:
         # ------------------------------------------------------
         st.subheader("🖼️ Image Previews (first 10, karyogram order)")
 
-        # 🔥 SORT the results by karyogram order before preview
+        # Sort the results by karyogram order before preview
         results_sorted = sorted(results, key=lambda r: karyo_order(r["Predicted Class"]))
 
         max_preview = min(10, len(results_sorted))
@@ -350,7 +365,13 @@ with tab2:
         st.stop()
 
     st.subheader("Class Distribution")
-    st.bar_chart(df["Predicted Class"].value_counts().sort_index())
+
+    # ----- Sort classes in true karyogram order: 1..22, X, Y -----
+    class_order = [str(i) for i in range(1, 23)] + ["X", "Y"]
+    cat_classes = pd.Categorical(df["Predicted Class"], categories=class_order, ordered=True)
+    class_counts = pd.value_counts(cat_classes).sort_index()
+    st.bar_chart(class_counts)
+    # -------------------------------------------------------------
 
     st.subheader("Confidence Histogram")
     fig, ax = plt.subplots()
