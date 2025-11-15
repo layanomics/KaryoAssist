@@ -62,6 +62,12 @@ with tab1:
         "Upload images or a `.zip` folder to classify chromosomes using a fine-tuned ResNet50."
     )
 
+    # ---------------------- FIX #2: CLEAR BUTTON ----------------------
+    if st.button("🧹 Clear Previous Analysis"):
+        st.session_state.clear()
+        st.experimental_rerun()
+    # ------------------------------------------------------------------
+
 # ----------------------------------------------------------
 # Load Model
 # ----------------------------------------------------------
@@ -92,7 +98,6 @@ def load_model():
 
     st.sidebar.success("Model loaded successfully")
     return model, class_names
-
 
 model, class_names = load_model()
 
@@ -269,6 +274,10 @@ with tab1:
             "Low Domain Score": r["Low Domain Score"],
         } for r in results])
 
+        # ----------------------- FIX #1: index starts from 1 -----------------------
+        df.index = df.index + 1
+        # ----------------------------------------------------------------------------
+
         def compute_flag(row):
             has_warning = isinstance(row["Warning"], str) and row["Warning"] != ""
             if row["Low Domain Score"] or has_warning:
@@ -315,7 +324,6 @@ with tab1:
 
                 st.image(thumb, caption=caption, use_column_width=False)
 
-                # --- Warning Logic for Preview ---
                 if r["Low Domain Score"] or r["Warning"]:
                     st.warning(
                         f"⚠️ Low domain score ({r['Domain Score']:.2f}) or poor quality – possibly out-of-domain."
