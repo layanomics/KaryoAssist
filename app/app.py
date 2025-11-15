@@ -26,17 +26,14 @@ Upload single images, multiple images, or a `.zip` folder for batch prediction.
 """)
 st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes).")
 
-# Fixed domain threshold (slider removed)
+# Fixed domain threshold
 domain_threshold = 0.30
 
 # ----------------------------------------------------------
 # Load per-class domain profiles
 # ----------------------------------------------------------
 DOMAIN_PROFILES = {}
-profile_paths = [
-    "app/models/domain_profiles.json",
-    "domain_profiles.json",
-]
+profile_paths = ["app/models/domain_profiles.json", "domain_profiles.json"]
 
 for p in profile_paths:
     if os.path.exists(p):
@@ -58,14 +55,12 @@ tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Mode
 
 with tab1:
     st.title("🧬 KaryoAssist")
-    st.markdown(
-        "Upload images or a `.zip` folder to classify chromosomes using a fine-tuned ResNet50."
-    )
+    st.markdown("Upload images or a `.zip` folder to classify chromosomes.")
 
     # ---------------------- FIX #2: CLEAR BUTTON ----------------------
     if st.button("🧹 Clear Previous Analysis"):
         st.session_state.clear()
-        st.experimental_rerun()
+        st.rerun()   # <<< FIXED: new Streamlit API
     # ------------------------------------------------------------------
 
 # ----------------------------------------------------------
@@ -95,8 +90,8 @@ def load_model():
     model.eval()
 
     class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
-
     st.sidebar.success("Model loaded successfully")
+
     return model, class_names
 
 model, class_names = load_model()
@@ -162,7 +157,7 @@ transform = T.Compose([
 ])
 
 # ----------------------------------------------------------
-# File Upload
+# File Upload Processing
 # ----------------------------------------------------------
 with tab1:
     uploaded_items = st.file_uploader(
@@ -176,7 +171,7 @@ with tab1:
         image_files = []
         temp_dir = tempfile.mkdtemp()
 
-        # Extract files
+        # unzip or direct images
         for item in uploaded_items:
             if item.name.lower().endswith(".zip"):
                 with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
@@ -198,9 +193,7 @@ with tab1:
         in_domain = 0
         out_domain = 0
 
-        # ------------------------------------------------------
-        # Process Each Image
-        # ------------------------------------------------------
+        # Process images
         for idx_img, img_item in enumerate(image_files):
             try:
                 if isinstance(img_item, str):
@@ -274,9 +267,9 @@ with tab1:
             "Low Domain Score": r["Low Domain Score"],
         } for r in results])
 
-        # ----------------------- FIX #1: index starts from 1 -----------------------
+        # ---------------- FIX #1: index starts from 1 ----------------
         df.index = df.index + 1
-        # ----------------------------------------------------------------------------
+        # --------------------------------------------------------------
 
         def compute_flag(row):
             has_warning = isinstance(row["Warning"], str) and row["Warning"] != ""
@@ -318,10 +311,8 @@ with tab1:
             with cols[i % 5]:
                 thumb = r["Preview"].resize((180, 180))
                 caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
-
                 if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
                     caption += " ⚠️"
-
                 st.image(thumb, caption=caption, use_column_width=False)
 
                 if r["Low Domain Score"] or r["Warning"]:
