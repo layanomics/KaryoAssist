@@ -167,6 +167,14 @@ transform = T.Compose([
     T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
+# Utility for sorting previews according to karyogram order
+def karyo_order(label):
+    if label == "X":
+        return 23
+    if label == "Y":
+        return 24
+    return int(label)
+
 # ----------------------------------------------------------
 # File Upload Processing
 # ----------------------------------------------------------
@@ -304,13 +312,17 @@ with tab1:
         c2.metric("Possibly Out-of-domain", out_domain)
 
         # ------------------------------------------------------
-        # Image Previews
+        # Image Previews (KARYOGRAM ORDER)
         # ------------------------------------------------------
-        st.subheader("🖼️ Image Previews (first 10)")
-        max_preview = min(10, len(results))
+        st.subheader("🖼️ Image Previews (first 10, karyogram order)")
+
+        # 🔥 SORT the results by karyogram order before preview
+        results_sorted = sorted(results, key=lambda r: karyo_order(r["Predicted Class"]))
+
+        max_preview = min(10, len(results_sorted))
         cols = st.columns(5)
 
-        for i, r in enumerate(results[:max_preview]):
+        for i, r in enumerate(results_sorted[:max_preview]):
             with cols[i % 5]:
                 thumb = r["Preview"].resize((180, 180))
                 caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
@@ -328,7 +340,7 @@ with tab1:
                     )
 
 # ----------------------------------------------------------
-# Analytics Tab (Crash FIX)
+# Analytics Tab
 # ----------------------------------------------------------
 with tab2:
     st.header("📈 Dataset Analytics")
