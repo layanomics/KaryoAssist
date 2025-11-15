@@ -53,15 +53,28 @@ if not DOMAIN_PROFILES:
 # ----------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Model"])
 
+# ----------------------------------------------------------
+# TAB 1 - PREDICT
+# ----------------------------------------------------------
 with tab1:
     st.title("🧬 KaryoAssist")
     st.markdown("Upload images or a `.zip` folder to classify chromosomes.")
 
-    # ---------------------- FIX #2: CLEAR BUTTON ----------------------
-    if st.button("🧹 Clear Previous Analysis"):
-        st.session_state.clear()
-        st.rerun()   # <<< FIXED: new Streamlit API
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------
+    # 🧹 CLEAR BUTTON (FIXED & IMPROVED)
+    # ------------------------------------------------------
+    st.markdown("### Actions")
+    if st.button("🧹 Clear All Uploads & Results"):
+        # Remove ONLY relevant keys so model doesn't reload
+        keys_to_clear = ["uploaded_items", "results", "image_files"]
+
+        for k in keys_to_clear:
+            if k in st.session_state:
+                del st.session_state[k]
+
+        # Force rerun
+        st.rerun()
+    st.markdown("---")
 
 # ----------------------------------------------------------
 # Load Model
@@ -91,7 +104,6 @@ def load_model():
 
     class_names = [str(i) for i in range(1, 23)] + ["X", "Y"]
     st.sidebar.success("Model loaded successfully")
-
     return model, class_names
 
 model, class_names = load_model()
@@ -160,13 +172,16 @@ transform = T.Compose([
 # File Upload Processing
 # ----------------------------------------------------------
 with tab1:
+
     uploaded_items = st.file_uploader(
         "📁 Upload chromosome images or zip folder",
         type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key="uploaded_items"
     )
 
     if uploaded_items:
+
         results = []
         image_files = []
         temp_dir = tempfile.mkdtemp()
@@ -267,9 +282,8 @@ with tab1:
             "Low Domain Score": r["Low Domain Score"],
         } for r in results])
 
-        # ---------------- FIX #1: index starts from 1 ----------------
+        # Index starts from 1
         df.index = df.index + 1
-        # --------------------------------------------------------------
 
         def compute_flag(row):
             has_warning = isinstance(row["Warning"], str) and row["Warning"] != ""
@@ -287,7 +301,7 @@ with tab1:
             use_container_width=True
         )
 
-        # CSV download
+        # Download CSV
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download CSV", data=csv, file_name="karyoassist_predictions.csv")
 
@@ -324,29 +338,32 @@ with tab1:
                         f"ℹ️ Low confidence ({r['Confidence']:.2f}) – uncertain but in-domain."
                     )
 
-        # ------------------------------------------------------
-        # Analytics Tab
-        # ------------------------------------------------------
-        with tab2:
-            st.header("📈 Dataset Analytics")
+# ----------------------------------------------------------
+# Analytics Tab
+# ----------------------------------------------------------
+with tab2:
+    st.header("📈 Dataset Analytics")
 
-            st.subheader("Class Distribution")
-            st.bar_chart(df["Predicted Class"].value_counts().sort_index())
+    if "uploaded_items" not in st.session_state or st.session_state["uploaded_items"] is None:
+        st.info("Upload images in the Predict tab to see analytics.")
+    else:
+        st.subheader("Class Distribution")
+        st.bar_chart(df["Predicted Class"].value_counts().sort_index())
 
-            st.subheader("Confidence Histogram")
-            fig, ax = plt.subplots()
-            ax.hist(df["Confidence"], bins=10)
-            st.pyplot(fig)
+        st.subheader("Confidence Histogram")
+        fig, ax = plt.subplots()
+        ax.hist(df["Confidence"], bins=10)
+        st.pyplot(fig)
 
-            st.subheader("Domain Score Histogram")
-            fig2, ax2 = plt.subplots()
-            ax2.hist(df["Domain Score"], bins=10)
-            st.pyplot(fig2)
+        st.subheader("Domain Score Histogram")
+        fig2, ax2 = plt.subplots()
+        ax2.hist(df["Domain Score"], bins=10)
+        st.pyplot(fig2)
 
-            st.subheader("Summary")
-            st.write(f"Total Images: {len(df)}")
-            st.write(f"Average Confidence: {df['Confidence'].mean():.4f}")
-            st.write(f"Average Domain Score: {df['Domain Score'].mean():.4f}")
+        st.subheader("Summary")
+        st.write(f"Total Images: {len(df)}")
+        st.write(f"Average Confidence: {df['Confidence'].mean():.4f}")
+        st.write(f"Average Domain Score: {df['Domain Score'].mean():.4f}")
 
 # ----------------------------------------------------------
 # About Tab
