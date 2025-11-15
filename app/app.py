@@ -26,8 +26,7 @@ Upload single images, multiple images, or a `.zip` folder for batch prediction.
 """)
 st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes: 1–22, X, Y).")
 
-# 🔧 Domain sensitivity (single source of truth)
-# (was a slider before – now fixed at the same default value 0.30)
+# 🔧 Domain sensitivity (fixed, slider removed)
 domain_threshold = 0.30
 
 # ----------------------------------------------------------
@@ -245,7 +244,7 @@ with tab1:
                 domain_score, mu, sigma, dark_ratio = compute_domain_score(img, pred_label)
 
                 is_low_conf = conf_val < 0.7
-                is_low_domain = domain_score < domain_threshold  # ✅ single threshold
+                is_low_domain = domain_score < domain_threshold  # single fixed threshold
 
                 warnings_list = []
                 if quality_warning:
@@ -257,8 +256,8 @@ with tab1:
 
                 combined_warning = " | ".join(warnings_list) if warnings_list else ""
 
-                # ✅ counters use the same logic as the table flag
-                if is_low_conf or is_low_domain or quality_warning:
+                # ⚠️ Domain counters: ONLY domain score + quality, NOT low confidence
+                if is_low_domain or quality_warning:
                     out_domain += 1
                 else:
                     in_domain += 1
@@ -306,9 +305,10 @@ with tab1:
                 "Low Domain Score": r["Low Domain Score"],
             } for r in results])
 
-            # ✅ Domain flag now uses the SAME logic as the counters
+            # ✅ Domain flag uses SAME logic as counters (no low-confidence effect)
             def compute_flag(row):
-                if row["Low Confidence"] or row["Low Domain Score"] or (isinstance(row["Warning"], str) and row["Warning"] != ""):
+                has_warning = isinstance(row["Warning"], str) and row["Warning"] != ""
+                if row["Low Domain Score"] or has_warning:
                     return "⚠️ Out-of-domain / low quality"
                 else:
                     return "✅ In-domain"
