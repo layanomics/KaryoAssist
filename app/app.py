@@ -27,10 +27,8 @@ Upload single images, multiple images, or a `.zip` folder for batch prediction.
 st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes: 1–22, X, Y).")
 
 # 🔧 Domain sensitivity (single source of truth)
-domain_threshold = st.sidebar.slider(
-    "Domain threshold (higher = stricter OOD)",
-    min_value=0.00, max_value=1.00, value=0.30, step=0.01
-)
+# (was a slider before – now fixed at the same default value 0.30)
+domain_threshold = 0.30
 
 # ----------------------------------------------------------
 # Load per-class domain profiles (from training stats)
@@ -304,12 +302,18 @@ with tab1:
                 "Std": r["Std"],
                 "DarkRatio": r["DarkRatio"],
                 "Warning": r["Warning"],
+                "Low Confidence": r["Low Confidence"],
+                "Low Domain Score": r["Low Domain Score"],
             } for r in results])
 
-            # ✅ Domain flag uses the same domain_threshold and logic as counters
-            df["Domain Flag"] = df["Domain Score"].apply(
-                lambda x: "⚠️ Out-of-domain" if x < domain_threshold else "✅ In-domain"
-            )
+            # ✅ Domain flag now uses the SAME logic as the counters
+            def compute_flag(row):
+                if row["Low Confidence"] or row["Low Domain Score"] or (isinstance(row["Warning"], str) and row["Warning"] != ""):
+                    return "⚠️ Out-of-domain / low quality"
+                else:
+                    return "✅ In-domain"
+
+            df["Domain Flag"] = df.apply(compute_flag, axis=1)
 
             st.subheader("📊 Prediction Results")
             styled_df = df.style.background_gradient(subset=["Confidence"], cmap="Blues") \
@@ -331,16 +335,19 @@ with tab1:
             col2.metric("⚠️ Possibly Out-of-domain", out_domain)
 
             # ------------------------------------------------------
-            # Image previews
+            # Image previews (small tiles, max 10)
             # ------------------------------------------------------
-            st.subheader("🖼️ Image Previews")
-            cols = st.columns(3)
-            for i, r in enumerate(results):
-                with cols[i % 3]:
+            st.subheader("🖼️ Image Previews (first 10)")
+            max_preview = min(10, len(results))
+            cols = st.columns(5)
+
+            for i, r in enumerate(results[:max_preview]):
+                with cols[i % 5]:
+                    thumb = r["Preview"].resize((180, 180))
                     caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
                     if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
                         caption += " ⚠️"
-                    st.image(r["Preview"], caption=caption, use_column_width=True)
+                    st.image(thumb, caption=caption, use_column_width=False)
                     if r["Warning"]:
                         st.warning(r["Warning"])
                     if r["Low Confidence"] or r["Low Domain Score"]:
