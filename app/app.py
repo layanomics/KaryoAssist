@@ -18,6 +18,13 @@ import json
 # ----------------------------------------------------------
 st.set_page_config(page_title="KaryoAssist", page_icon="🧬", layout="wide")
 
+# ----------------------------------------------------------
+# Handle force-clear flag (SAFE reset method)
+# ----------------------------------------------------------
+if st.session_state.get("force_clear", False):
+    st.session_state.clear()  # clears everything, including uploaded files
+    st.rerun()
+
 # Sidebar
 st.sidebar.title("⚙️ Settings & Info")
 st.sidebar.markdown("""
@@ -26,11 +33,11 @@ Upload single images, multiple images, or a `.zip` folder for batch prediction.
 """)
 st.sidebar.info("Model: Fine-tuned **ResNet50** (24 chromosome classes).")
 
-# Fixed domain threshold
+# Fixed threshold
 domain_threshold = 0.30
 
 # ----------------------------------------------------------
-# Load per-class domain profiles
+# Load domain profiles
 # ----------------------------------------------------------
 DOMAIN_PROFILES = {}
 profile_paths = ["app/models/domain_profiles.json", "domain_profiles.json"]
@@ -53,16 +60,30 @@ if not DOMAIN_PROFILES:
 # ----------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🔬 Predict", "📈 Analytics", "ℹ️ About Model"])
 
+
+# ----------------------------------------------------------
+# PREDICT TAB
+# ----------------------------------------------------------
 with tab1:
+
     st.title("🧬 KaryoAssist")
     st.markdown("Upload images or a `.zip` folder to classify chromosomes.")
 
-    # ---------------------- CLEAR BUTTON FIX ----------------------
+    # ------------------------------------------------------
+    # CLEAR BUTTON (safe method using flag)
+    # ------------------------------------------------------
     if st.button("🧹 Clear Previous Analysis"):
-        st.session_state.clear()
-        st.session_state["uploaded_items"] = None
+        st.session_state["force_clear"] = True
         st.rerun()
-    # --------------------------------------------------------------
+    # ------------------------------------------------------
+
+    uploaded_items = st.file_uploader(
+        "📁 Upload chromosome images or zip folder",
+        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
+        accept_multiple_files=True,
+        key="uploaded_items"
+    )
+
 
 # ----------------------------------------------------------
 # Load Model
@@ -95,6 +116,7 @@ def load_model():
 
     return model, class_names
 
+
 model, class_names = load_model()
 
 # ----------------------------------------------------------
@@ -109,9 +131,11 @@ def check_image_quality(img, min_size=20, min_contrast=5):
         return f"Low contrast (σ={gray.std():.1f})"
     return None
 
+
 def _feature_score(val, p25, p50, p75):
     width = max(p75 - p25, 1e-3)
     return float(np.exp(-((val - p50) / (2 * width)) ** 2))
+
 
 def compute_domain_score(img, pred_label):
     gray = np.array(img.convert("L"), dtype=np.float32)
@@ -148,6 +172,7 @@ def compute_domain_score(img, pred_label):
     score = (s_mu * s_sigma * s_dark) ** (1 / 3)
     return float(np.clip(score, 0, 1)), mu, sigma, dark_ratio
 
+
 # ----------------------------------------------------------
 # Preprocessing
 # ----------------------------------------------------------
@@ -157,37 +182,27 @@ transform = T.Compose([
     T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
+
 # ----------------------------------------------------------
-# File Upload Processing
+# Processing uploaded images
 # ----------------------------------------------------------
-with tab1:
-    uploaded_items = st.file_uploader(
-        "📁 Upload chromosome images or zip folder",
-        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
-        accept_multiple_files=True,
-        key="uploaded_items"
-    )
+if uploaded_items:
+    results = []
+    image_files = []
+    temp_dir = tempfile.mkdtemp()
 
-    if uploaded_items:
-        results = []
-        image_files = []
-        temp_dir = tempfile.mkdtemp()
+    for item in uploaded_items:
+        if item.name.lower().endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
+                zf.extractall(temp_dir)
+            for root, _, files in os.walk(temp_dir):
+                for f in files:
+                    if f.lower().endswith(("png", "jpg", "jpeg", "bmp", "tif", "tiff")):
+                        image_files.append(os.path.join(root, f))
+        else:
+            image_files.append(item)
 
-        for item in uploaded_items:
-            if item.name.lower().endswith(".zip"):
-                with zipfile.ZipFile(io.BytesIO(item.read()), "r") as zf:
-                    zf.extractall(temp_dir)
-                for root, _, files in os.walk(temp_dir):
-                    for f in files:
-                        if f.lower().endswith(("png", "jpg", "jpeg", "bmp", "tif", "tiff")):
-                            image_files.append(os.path.join(root, f))
-            else:
-                image_files.append(item)
-
-        if not image_files:
-            st.warning("No valid images found.")
-            st.stop()
-
+    if image_files:
         st.info(f"Processing {len(image_files)} image(s)...")
         progress = st.progress(0)
 
@@ -270,11 +285,10 @@ with tab1:
         df.index = df.index + 1
 
         def compute_flag(row):
-            has_warning = isinstance(row["Warning"], str) and row["Warning"] != ""
+            has_warning = bool(row["Warning"])
             if row["Low Domain Score"] or has_warning:
                 return "⚠️ Out-of-domain / low quality"
-            else:
-                return "✅ In-domain"
+            return "✅ In-domain"
 
         df["Domain Flag"] = df.apply(compute_flag, axis=1)
 
@@ -301,10 +315,8 @@ with tab1:
         # Image Previews
         # ------------------------------------------------------
         st.subheader("🖼️ Image Previews (first 10)")
-        max_preview = min(10, len(results))
         cols = st.columns(5)
-
-        for i, r in enumerate(results[:max_preview]):
+        for i, r in enumerate(results[:10]):
             with cols[i % 5]:
                 thumb = r["Preview"].resize((180, 180))
                 caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
@@ -313,23 +325,27 @@ with tab1:
                 st.image(thumb, caption=caption, use_column_width=False)
 
                 if r["Low Domain Score"] or r["Warning"]:
-                    st.warning(
-                        f"⚠️ Low domain score ({r['Domain Score']:.2f}) or poor quality – possibly out-of-domain."
-                    )
+                    st.warning(f"⚠️ Low domain score ({r['Domain Score']:.2f}) or poor quality.")
                 elif r["Low Confidence"]:
-                    st.info(
-                        f"ℹ️ Low confidence ({r['Confidence']:.2f}) – uncertain but in-domain."
-                    )
+                    st.info(f"ℹ️ Low confidence ({r['Confidence']:.2f})")
+
+        # ----------------------------------------------------------
+        # Store df for Analytics
+        # ----------------------------------------------------------
+        st.session_state["stored_df"] = df
+
 
 # ----------------------------------------------------------
-# Analytics Tab (Crash FIX)
+# Analytics Tab — Safe version (no crash)
 # ----------------------------------------------------------
 with tab2:
     st.header("📈 Dataset Analytics")
 
-    if "df" not in locals() and "df" not in globals():
+    if "stored_df" not in st.session_state:
         st.info("Run predictions in the Predict tab to generate analytics.")
         st.stop()
+
+    df = st.session_state["stored_df"]
 
     st.subheader("Class Distribution")
     st.bar_chart(df["Predicted Class"].value_counts().sort_index())
@@ -348,6 +364,7 @@ with tab2:
     st.write(f"Total Images: {len(df)}")
     st.write(f"Average Confidence: {df['Confidence'].mean():.4f}")
     st.write(f"Average Domain Score: {df['Domain Score'].mean():.4f}")
+
 
 # ----------------------------------------------------------
 # About Tab
