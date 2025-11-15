@@ -218,7 +218,7 @@ with tab1:
 
                 domain_score, mu, sigma, dark_ratio = compute_domain_score(img, pred_label)
 
-                is_low_conf = conf_val < 0.7
+                is_low_conf = conf_val < 0.55
                 is_low_domain = domain_score < domain_threshold
 
                 warning_text = ""
