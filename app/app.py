@@ -165,7 +165,7 @@ with tab1:
         "📁 Upload chromosome images or zip folder",
         type=["png", "jpg", "jpeg", "bmp", "tif", "tiff", "zip"],
         accept_multiple_files=True,
-        key="uploaded_items"  # <--- REQUIRED FIX
+        key="uploaded_items"
     )
 
     if uploaded_items:
@@ -327,11 +327,9 @@ with tab1:
 with tab2:
     st.header("📈 Dataset Analytics")
 
-    # ---- FIX: Prevent crash when no df exists ----
     if "df" not in locals() and "df" not in globals():
         st.info("Run predictions in the Predict tab to generate analytics.")
         st.stop()
-    # ----------------------------------------------
 
     st.subheader("Class Distribution")
     st.bar_chart(df["Predicted Class"].value_counts().sort_index())
@@ -349,7 +347,7 @@ with tab2:
     st.subheader("Summary")
     st.write(f"Total Images: {len(df)}")
     st.write(f"Average Confidence: {df['Confidence'].mean():.4f}")
-    st.write(f"Average Domain Score": {df['Domain Score'].mean():.4f}")
+    st.write(f"Average Domain Score: {df['Domain Score'].mean():.4f}")
 
 # ----------------------------------------------------------
 # About Tab
