@@ -348,13 +348,18 @@ with tab1:
                     if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
                         caption += " ⚠️"
                     st.image(thumb, caption=caption, use_column_width=False)
-                    if r["Warning"]:
-                        st.warning(r["Warning"])
-                    if r["Low Confidence"] or r["Low Domain Score"]:
-                        st.warning(
-                            f"⚠️ Low confidence ({r['Confidence']:.2f}) or low domain score "
-                            f"({r['Domain Score']:.2f}) – possibly out-of-domain input."
-                        )
+                    
+                   # --- Warning Logic for Preview ---
+                   if r["Low Domain Score"] or r["Warning"]:
+                       # Domain OR quality → Real warning
+                       st.warning(
+                            f"⚠️ Low domain score ({r['Domain Score']:.2f}) or poor quality – possibly out-of-domain input."
+                       )
+                   elif r["Low Confidence"]:
+                       # Confidence ONLY → Soft warning (NOT OOD)
+                       st.info(
+                          f"ℹ️ Low confidence ({r['Confidence']:.2f}) – prediction uncertain but image is in-domain."
+                       )
 
             # ------------------------------------------------------
             # Analytics Tab
