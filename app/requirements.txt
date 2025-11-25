@@ -6,5 +6,4 @@ gdown
 pandas
 matplotlib
 streamlit-sortables
-streamlit-sortablejs
 
