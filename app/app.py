@@ -12,6 +12,7 @@ import tempfile
 import matplotlib.pyplot as plt
 import numpy as np
 import json
+from streamlit_sortables import sort_items  # 🔹 for drag-and-drop ordering
 
 # ----------------------------------------------------------
 # Streamlit Page Config
@@ -327,17 +328,51 @@ with tab1:
         c2.metric("Possibly Out-of-domain", out_domain)
 
         # ------------------------------------------------------
-        # Image Previews (KARYOGRAM ORDER)
+        # Image Previews (KARYOGRAM ORDER + DRAG-AND-DROP)
         # ------------------------------------------------------
-        st.subheader("🖼️ Image Previews (first 10, karyogram order)")
+        st.subheader("🖼️ Image Previews (up to 46, karyogram order)")
 
         # Sort the results by karyogram order before preview
         results_sorted = sorted(results, key=lambda r: karyo_order(r["Predicted Class"]))
 
-        max_preview = min(10, len(results_sorted))
+        max_preview = min(46, len(results_sorted))
+        preview_results = results_sorted[:max_preview]
+
+        if len(results_sorted) > max_preview:
+            st.caption(
+                f"Showing first {max_preview} images for preview and reordering. "
+                "Additional images are still included in the table, CSV, and analytics."
+            )
+
+        # ---- Drag-and-drop reordering using streamlit-sortables ----
+        # Encode the original index so we can restore object order after sorting.
+        original_items = [
+            f"{i}:: {r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
+            for i, r in enumerate(preview_results)
+        ]
+
+        st.markdown("**Drag the items below to change the display order of the previews:**")
+        sorted_items = sort_items(original_items)
+
+        # Recover the new order of indices from the sorted strings
+        order_indices = []
+        for s_item in sorted_items:
+            try:
+                idx_str = s_item.split("::", 1)[0]
+                order_indices.append(int(idx_str))
+            except Exception:
+                continue
+
+        # Fallback: if parsing failed for some reason, keep original order
+        if len(order_indices) != len(preview_results):
+            ordered_preview_results = preview_results
+        else:
+            ordered_preview_results = [preview_results[i] for i in order_indices]
+
+        # ---- Show the thumbnails in the user-defined order ----
         cols = st.columns(5)
 
-        for i, r in enumerate(results_sorted[:max_preview]):
+        for i, r in enumerate(ordered_preview_results):
             with cols[i % 5]:
                 thumb = r["Preview"].resize((180, 180))
                 caption = f"{r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
