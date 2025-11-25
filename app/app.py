@@ -12,6 +12,7 @@ import tempfile
 import matplotlib.pyplot as plt
 import numpy as np
 import json
+import base64
 from streamlit_sortables import sort_items  # 🔹 for drag-and-drop ordering
 
 # ----------------------------------------------------------
@@ -345,14 +346,47 @@ with tab1:
             )
 
         # ---- Drag-and-drop reordering using streamlit-sortables ----
-        # Encode the original index so we can restore object order after sorting.
-        original_items = [
-            f"{i}:: {r['Image']} → {r['Predicted Class']} ({r['Confidence']:.3f})"
-            for i, r in enumerate(preview_results)
-        ]
+        # Build HTML cards (image + label + light-blue background)
+        items = []
+        for i, r in enumerate(preview_results):
+            # Convert thumbnail to base64
+            buf = io.BytesIO()
+            thumb_img = r["Preview"].resize((180, 180))
+            thumb_img.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        st.markdown("**Drag the items below to change the display order of the previews:**")
-        sorted_items = sort_items(original_items)
+            warning_line = ""
+            if r["Warning"] or r["Low Confidence"] or r["Low Domain Score"]:
+                warning_line = (
+                    "<div style='color:#b00020;font-size:11px;margin-top:4px;'>"
+                    "⚠ Check domain / confidence"
+                    "</div>"
+                )
+
+            card_html = f"""
+            <div style="
+                background-color:#e9f4ff;
+                border-radius:12px;
+                padding:8px;
+                text-align:center;
+                box-sizing:border-box;
+            ">
+                <img src="data:image/png;base64,{b64}"
+                     style="width:120px;border-radius:8px;"/>
+                <div style="font-size:13px;font-weight:600;margin-top:4px;">
+                    {r['Predicted Class']} ({r['Confidence']:.3f})
+                </div>
+                <div style="font-size:11px;color:#555;">
+                    {r['Image']}
+                </div>
+                {warning_line}
+            </div>
+            """
+            # Prefix with index so we can recover order later
+            items.append(f"{i}:: {card_html}")
+
+        st.markdown("**Drag the cards below to change the display order of the previews:**")
+        sorted_items = sort_items(items)
 
         # Recover the new order of indices from the sorted strings
         order_indices = []
@@ -369,7 +403,7 @@ with tab1:
         else:
             ordered_preview_results = [preview_results[i] for i in order_indices]
 
-        # ---- Show the thumbnails in the user-defined order ----
+        # ---- Show the thumbnails in the user-defined order (5-column grid) ----
         cols = st.columns(5)
 
         for i, r in enumerate(ordered_preview_results):
